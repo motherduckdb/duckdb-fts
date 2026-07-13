@@ -12,15 +12,15 @@ namespace duckdb {
 
 static QualifiedName GetQualifiedName(ClientContext &context, const string &qname_str) {
 	auto qname = QualifiedName::Parse(qname_str);
-	if (qname.schema == INVALID_SCHEMA) {
-		qname.schema = ClientData::Get(context).catalog_search_path->GetDefaultSchema(qname.catalog);
+	if (qname.Schema() == INVALID_SCHEMA) {
+		qname = QualifiedName(qname.Catalog(), Identifier(ClientData::Get(context).catalog_search_path->GetDefaultSchema(qname.Catalog())), qname.Name());
 	}
 	return qname;
 }
 
 static string GetFTSSchema(QualifiedName &qname) {
-	auto result = qname.catalog == INVALID_CATALOG ? "" : StringUtil::Format("%s.", qname.catalog);
-	result += StringUtil::Format("fts_%s_%s", qname.schema, qname.name);
+	auto result = qname.Catalog() == INVALID_CATALOG ? "" : StringUtil::Format("%s.", qname.Catalog().GetIdentifierName());
+	result += StringUtil::Format("fts_%s_%s", qname.Schema().GetIdentifierName(), qname.Name().GetIdentifierName());
 	return result;
 }
 
@@ -28,10 +28,10 @@ string FTSIndexing::DropFTSIndexQuery(ClientContext &context, const FunctionPara
 	auto qname = GetQualifiedName(context, StringValue::Get(parameters.values[0]));
 	string fts_schema = GetFTSSchema(qname);
 
-	if (!Catalog::GetSchema(context, qname.catalog, fts_schema, OnEntryNotFound::RETURN_NULL)) {
+	if (!Catalog::GetSchema(context, qname.Catalog(), Identifier(fts_schema), OnEntryNotFound::RETURN_NULL)) {
 		throw CatalogException(
-		    "a FTS index does not exist on table '%s.%s'. Create one with 'PRAGMA create_fts_index()'.", qname.schema,
-		    qname.name);
+		    "a FTS index does not exist on table '%s.%s'. Create one with 'PRAGMA create_fts_index()'.",
+		    qname.Schema().GetIdentifierName(), qname.Name().GetIdentifierName());
 	}
 
 	return StringUtil::Format("DROP SCHEMA %s CASCADE;", fts_schema);
@@ -232,8 +232,9 @@ static string IndexingScript(ClientContext &context, QualifiedName &qname, const
 	result = StringUtil::Replace(result, "%union_fields_query%", StringUtil::Join(tokenize_fields, " UNION ALL "));
 
 	string fts_schema = GetFTSSchema(qname);
-	string input_table = qname.catalog == INVALID_CATALOG ? "" : StringUtil::Format("%s.", qname.catalog);
-	input_table += StringUtil::Format("%s.%s", qname.schema, qname.name);
+	string input_table =
+	    qname.Catalog() == INVALID_CATALOG ? "" : StringUtil::Format("%s.", qname.Catalog().GetIdentifierName());
+	input_table += StringUtil::Format("%s.%s", qname.Schema().GetIdentifierName(), qname.Name().GetIdentifierName());
 
 	// fill in variables (inefficiently, but keeps SQL script readable)
 	result = StringUtil::Replace(result, "%fts_schema%", fts_schema);
@@ -245,7 +246,7 @@ static string IndexingScript(ClientContext &context, QualifiedName &qname, const
 }
 
 static void CheckIfTableExists(ClientContext &context, QualifiedName &qname) {
-	Catalog::GetEntry<TableCatalogEntry>(context, qname.catalog, qname.schema, qname.name);
+	Catalog::GetEntry<TableCatalogEntry>(context, qname);
 }
 
 string FTSIndexing::CreateFTSIndexQuery(ClientContext &context, const FunctionParameters &parameters) {
@@ -295,16 +296,16 @@ string FTSIndexing::CreateFTSIndexQuery(ClientContext &context, const FunctionPa
 
 	// throw error if an index already exists on this table
 	const string fts_schema = GetFTSSchema(qname);
-	if (Catalog::GetSchema(context, qname.catalog, fts_schema, OnEntryNotFound::RETURN_NULL) && !overwrite) {
+	if (Catalog::GetSchema(context, qname.Catalog(), Identifier(fts_schema), OnEntryNotFound::RETURN_NULL) && !overwrite) {
 		throw CatalogException("a FTS index already exists on table '%s.%s'. Supply 'overwrite=1' to overwrite, or "
 		                       "drop the existing index with 'PRAGMA drop_fts_index()' before creating a new one.",
-		                       qname.schema, qname.name);
+		                       qname.Schema().GetIdentifierName(), qname.Name().GetIdentifierName());
 	}
 
 	// positional parameters
 	auto doc_id = StringValue::Get(parameters.values[1]);
 	// check all specified columns
-	auto &table = Catalog::GetEntry<TableCatalogEntry>(context, qname.catalog, qname.schema, qname.name);
+	auto &table = Catalog::GetEntry<TableCatalogEntry>(context, qname);
 	vector<string> doc_values;
 	for (idx_t i = 2; i < parameters.values.size(); i++) {
 		string col_name = StringValue::Get(parameters.values[i]);
@@ -313,14 +314,15 @@ string FTSIndexing::CreateFTSIndexQuery(ClientContext &context, const FunctionPa
 			doc_values.clear();
 			for (auto &cd : table.GetColumns().Logical()) {
 				if (cd.Type() == LogicalType::VARCHAR) {
-					doc_values.push_back(cd.Name());
+					doc_values.emplace_back(cd.Name());
 				}
 			}
 			break;
 		}
-		if (!table.ColumnExists(col_name)) {
+		if (!table.ColumnExists(Identifier(col_name))) {
 			// we check this here because else we we end up with an error halfway the indexing script
-			throw CatalogException("Table '%s.%s' does not have a column named '%s'!", qname.schema, qname.name,
+			throw CatalogException("Table '%s.%s' does not have a column named '%s'!", qname.Schema().GetIdentifierName(),
+			                       qname.Name().GetIdentifierName(),
 			                       col_name);
 		}
 		doc_values.push_back(col_name);
