@@ -25,7 +25,7 @@ name: Forward PR events to pr-tracker
 #     via ${{ }} (script injection, not checkout, is the likeliest exfil path).
 #
 # SETUP (per tracked repo):
-#   Add a secret PR_TRACKER_DISPATCH_TOKEN = a fine-grained PAT scoped to
+#   Add a secret PR_DISPATCH_TOKEN = a fine-grained PAT scoped to
 #   duckdblabs/pr-tracker ONLY, with Contents: write (the minimum that
 #   repository_dispatch requires). Nothing else — keep blast radius tiny.
 
@@ -44,7 +44,7 @@ jobs:
     steps:
       - name: Dispatch to pr-tracker
         env:
-          GH_TOKEN: ${{ secrets.PR_TRACKER_DISPATCH_TOKEN }}
+          GH_TOKEN: ${{ secrets.PR_DISPATCH_TOKEN }}
           EVENT_KIND: ${{ github.event_name }}
           EVENT_ACTION: ${{ github.event.action }}
           REPO: ${{ github.repository }}
