@@ -72,6 +72,7 @@ jobs:
           make release
           mkdir -p runner-artifacts/current/release/benchmark
           cp build/release/benchmark/benchmark_runner runner-artifacts/current/release/benchmark/
+          cp build/release/duckdb runner-artifacts/current/release/
 
       - name: Select base revision
         env:
@@ -140,6 +141,8 @@ jobs:
               echo "AUTOCOMPLETE_BENCHMARKS=.github/regression/fts_autocomplete_haystack.csv"
               echo "FIELD_SCORING_BENCHMARKS=.github/regression/fts_field_scoring_haystack.csv"
               echo "BOOLEAN_BENCHMARKS=.github/regression/fts_boolean_haystack.csv"
+              echo "PHRASE_BENCHMARKS=.github/regression/fts_phrase_haystack.csv"
+              echo "FOOTPRINT_ROWS=1000000"
               echo "BENCHMARK_BUDGET_SECONDS=3600"
             } >> "$GITHUB_ENV"
           else
@@ -148,6 +151,8 @@ jobs:
               echo "AUTOCOMPLETE_BENCHMARKS=.github/regression/fts_autocomplete.csv"
               echo "FIELD_SCORING_BENCHMARKS=.github/regression/fts_field_scoring.csv"
               echo "BOOLEAN_BENCHMARKS=.github/regression/fts_boolean.csv"
+              echo "PHRASE_BENCHMARKS=.github/regression/fts_phrase.csv"
+              echo "FOOTPRINT_ROWS=50000"
               echo "BENCHMARK_BUDGET_SECONDS=300"
             } >> "$GITHUB_ENV"
           fi
@@ -200,11 +205,30 @@ jobs:
               --threads 2 \
               --clear-benchmark-cache \
               --verbose 2>&1 | tee boolean-regression.log
+
+            python3 duckdb/scripts/regression/test_runner.py \
+              --old "$NEW_RUNNER" \
+              --new "$NEW_RUNNER" \
+              --benchmarks "$PHRASE_BENCHMARKS" \
+              --root-dir . \
+              --threads 2 \
+              --clear-benchmark-cache \
+              --nofail \
+              --verbose 2>&1 | tee phrase-smoke.log
           }
 
           export -f run_benchmarks
-          export OLD_RUNNER NEW_RUNNER LAYERED_BENCHMARKS AUTOCOMPLETE_BENCHMARKS FIELD_SCORING_BENCHMARKS BOOLEAN_BENCHMARKS
+          export OLD_RUNNER NEW_RUNNER LAYERED_BENCHMARKS AUTOCOMPLETE_BENCHMARKS FIELD_SCORING_BENCHMARKS BOOLEAN_BENCHMARKS PHRASE_BENCHMARKS
           timeout "${BENCHMARK_BUDGET_SECONDS}s" bash -c run_benchmarks
+
+      - name: Report positional index footprint
+        run: |
+          chmod +x build/current/release/duckdb
+          rm -f fts-phrase-footprint.duckdb
+          FTS_BENCHMARK_ROWS="$FOOTPRINT_ROWS" build/current/release/duckdb \
+            fts-phrase-footprint.duckdb \
+            -f benchmark/fts/layered_autocomplete/report_index_footprint.sql \
+            2>&1 | tee phrase-footprint.log
 
       - name: Add timing output to job summary
         if: always()
@@ -226,6 +250,14 @@ jobs:
             echo '```text'
             test ! -f boolean-regression.log || cat boolean-regression.log
             echo '```'
+            echo '## FTS phrase-query smoke'
+            echo '```text'
+            test ! -f phrase-smoke.log || cat phrase-smoke.log
+            echo '```'
+            echo '## FTS positional index footprint'
+            echo '```text'
+            test ! -f phrase-footprint.log || cat phrase-footprint.log
+            echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload benchmark logs
@@ -238,4 +270,6 @@ jobs:
             autocomplete-smoke.log
             field-scoring-smoke.log
             boolean-regression.log
+            phrase-smoke.log
+            phrase-footprint.log
           if-no-files-found: ignore
