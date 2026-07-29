@@ -4,7 +4,6 @@ if (LINK_FTS_STATICALLY)
     set(FTS_DONT_LINK "")
 endif()
 
-duckdb_extension_load(icu)
 duckdb_extension_load(json)
 
 # Extension from this repo

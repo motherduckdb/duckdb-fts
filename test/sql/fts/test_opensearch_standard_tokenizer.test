@@ -203,6 +203,27 @@ file
 🙂
 test
 
+# Exercise Unicode properties that are not represented by general categories.
+query T
+SELECT hex(token)
+FROM (
+    SELECT unnest(fts_tokenize_opensearch_standard(
+        'a' || chr(13312) || 'b ' || chr(110593) || ' ' ||
+        chr(127462) || ' ' || chr(169) || ' x' || chr(8195) ||
+        'y ' || chr(1633)
+    )) AS token
+)
+----
+61
+E39080
+62
+F09B8081
+F09F87A6
+C2A9
+78
+79
+D9A1
+
 query T
 SELECT token
 FROM (
