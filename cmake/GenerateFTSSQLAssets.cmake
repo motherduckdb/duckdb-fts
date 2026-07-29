@@ -9,6 +9,44 @@ function(_fts_write_if_different path content_variable)
   file(WRITE "${path}" "${new_content}")
 endfunction()
 
+function(_fts_render_raw_string output_variable content delimiter source)
+  set(chunk_limit 16000)
+  set(result "")
+  set(chunk "")
+  set(remaining "${content}")
+  while(TRUE)
+    string(FIND "${remaining}" "\n" newline_offset)
+    if(newline_offset EQUAL -1)
+      set(line "${remaining}")
+      set(remaining "")
+    else()
+      math(EXPR line_length "${newline_offset} + 1")
+      string(SUBSTRING "${remaining}" 0 ${line_length} line)
+      string(SUBSTRING "${remaining}" ${line_length} -1 remaining)
+    endif()
+
+    string(LENGTH "${line}" line_length)
+    if(line_length GREATER chunk_limit)
+      message(FATAL_ERROR
+              "Line in FTS SQL asset ${source} exceeds ${chunk_limit} bytes")
+    endif()
+    string(LENGTH "${chunk}" chunk_length)
+    math(EXPR combined_length "${chunk_length} + ${line_length}")
+    if(combined_length GREATER chunk_limit)
+      string(APPEND result "R\"${delimiter}(${chunk})${delimiter}\"\n    ")
+      set(chunk "${line}")
+    else()
+      string(APPEND chunk "${line}")
+    endif()
+
+    if(remaining STREQUAL "")
+      string(APPEND result "R\"${delimiter}(${chunk})${delimiter}\"")
+      break()
+    endif()
+  endwhile()
+  set(${output_variable} "${result}" PARENT_SCOPE)
+endfunction()
+
 function(generate_fts_sql_assets output_directory)
   file(MAKE_DIRECTORY "${output_directory}")
 
@@ -40,13 +78,15 @@ function(generate_fts_sql_assets output_directory)
       message(FATAL_ERROR
               "Raw string delimiter collision in FTS SQL asset ${asset_relative_path}")
     endif()
+    _fts_render_raw_string(asset_literal "${asset_sql}" "${raw_delimiter}"
+                           "${asset_relative_path}")
 
     string(APPEND header_content
            "extern const SQLTemplateAsset ${asset_name};\n")
     string(APPEND source_content
            "const SQLTemplateAsset ${asset_name} = {\n"
            "    \"${asset_relative_path}\",\n"
-           "    R\"${raw_delimiter}(${asset_sql})${raw_delimiter}\"};\n\n")
+           "    ${asset_literal}};\n\n")
   endforeach()
 
   string(APPEND header_content "\n} // namespace fts_sql\n} // namespace duckdb\n")
