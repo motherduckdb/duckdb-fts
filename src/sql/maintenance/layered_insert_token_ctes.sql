@@ -7,6 +7,7 @@ stemmed_stopped AS (
            stem(t.w, {{stemmer}}) AS term,
            t.docid AS docid,
            t.fieldid AS fieldid
+           {{position_select}}
     FROM tokenized AS t
     WHERE t.w NOT NULL
       AND t.w <> ''

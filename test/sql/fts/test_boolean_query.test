@@ -564,7 +564,7 @@ fields contains unknown field: missing
 statement error
 SELECT * FROM fts_main_boolean_docs.search_layered_bm25_query('{"query":"alpha","query_mode":"invalid"}'::JSON)
 ----
-query_mode must be either standard or autocomplete
+query_mode must be one of standard, autocomplete, phrase, or phrase_prefix
 
 statement error
 SELECT * FROM fts_main_boolean_docs.search_layered_bm25_query('{"query":"alpha","boost":-1}'::JSON)

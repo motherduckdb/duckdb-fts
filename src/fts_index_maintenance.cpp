@@ -172,17 +172,17 @@ static string LayeredDeleteAfterDFTriggerScript(const QualifiedName &qname,
         SQLTemplateArgument::TrustedSQL(affected_termids)}});
 }
 
-static vector<string>
-BuildInsertedFieldQueries(const QualifiedName &qname,
-                          const vector<string> &input_values,
-                          vector<string> &input_value_selects) {
+static vector<string> BuildInsertedFieldQueries(
+    const QualifiedName &qname, const vector<string> &input_values,
+    vector<string> &input_value_selects, bool include_positions) {
   vector<string> tokenize_fields;
   for (auto &input_value : input_values) {
     input_value_selects.push_back(StringUtil::Format(
         "fts_new_rows.%s AS %s", SQLIdentifier::ToString(input_value),
         SQLIdentifier::ToString(input_value)));
     tokenize_fields.push_back(RenderSQLTemplate(
-        fts_sql::TOKENIZE_INSERTED_FIELD,
+        include_positions ? fts_sql::TOKENIZE_INSERTED_POSITIONAL_FIELD
+                          : fts_sql::TOKENIZE_INSERTED_FIELD,
         {{"fts_schema", GetFTSSchemaArgument(qname)},
          {"input_value", SQLTemplateArgument::Identifier(input_value)},
          {"input_value_string",
@@ -196,8 +196,8 @@ static string InsertTriggerScript(const QualifiedName &qname,
                                   const vector<string> &input_values,
                                   const string &stemmer, bool layered_search) {
   vector<string> input_value_selects;
-  auto tokenize_fields =
-      BuildInsertedFieldQueries(qname, input_values, input_value_selects);
+  auto tokenize_fields = BuildInsertedFieldQueries(
+      qname, input_values, input_value_selects, layered_search);
   auto input_value_select_list =
       StringUtil::Join(input_value_selects, ",\n                   ");
   auto union_fields_query = StringUtil::Join(tokenize_fields, " UNION ALL ");
@@ -219,6 +219,9 @@ static string InsertTriggerScript(const QualifiedName &qname,
        {"union_fields_query",
         SQLTemplateArgument::TrustedSQL(union_fields_query)},
        {"stemmer", SQLTemplateArgument::StringLiteral(stemmer)},
+       {"position_select",
+        SQLTemplateArgument::TrustedSQL(
+            layered_search ? ",\n           t.position AS position" : "")},
        {"fts_schema", GetFTSSchemaArgument(qname)}});
   auto trigger_names = GetFTSInsertTriggerNames(qname);
   auto raw_dict_join =
@@ -256,15 +259,17 @@ static string InsertTriggerScript(const QualifiedName &qname,
                 : "")},
        {"terms_insert_columns",
         SQLTemplateArgument::TrustedSQL(
-            layered_search ? "docid, fieldid, termid, rawtermid"
+            layered_search ? "docid, fieldid, termid, rawtermid, position"
                            : "docid, fieldid, termid")},
-       {"rawtermid_select", SQLTemplateArgument::TrustedSQL(
-                                layered_search ? ", rd.rawtermid" : "")},
+       {"layered_term_select",
+        SQLTemplateArgument::TrustedSQL(
+            layered_search ? ", rd.rawtermid,\n           ss.position" : "")},
        {"raw_dict_join", SQLTemplateArgument::TrustedSQL(raw_dict_join)},
        {"insert_terms_order_by",
         SQLTemplateArgument::TrustedSQL(
             layered_search
-                ? "ORDER BY d.termid, rd.rawtermid, ss.fieldid, ss.docid"
+                ? "ORDER BY d.termid, rd.rawtermid, ss.fieldid, ss.docid, "
+                  "ss.position"
                 : "")},
        {"input_id", SQLTemplateArgument::Identifier(input_id)},
        {"layered_insert_df_triggers",
@@ -282,8 +287,8 @@ static string ClusteredInsertTriggerScript(const QualifiedName &qname,
                                            const vector<string> &input_values,
                                            const string &stemmer) {
   vector<string> input_value_selects;
-  auto tokenize_fields =
-      BuildInsertedFieldQueries(qname, input_values, input_value_selects);
+  auto tokenize_fields = BuildInsertedFieldQueries(qname, input_values,
+                                                   input_value_selects, false);
   auto input_value_select_list =
       StringUtil::Join(input_value_selects, ",\n                   ");
   auto union_fields_query = StringUtil::Join(tokenize_fields, " UNION ALL ");

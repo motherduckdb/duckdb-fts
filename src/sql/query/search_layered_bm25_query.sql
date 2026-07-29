@@ -211,13 +211,18 @@ raw_query_validation_errors AS (
     WHERE field_type = 'VARCHAR'
       AND field_name NOT IN (SELECT field FROM {{fts_schema}}.fields)
     UNION ALL
-    SELECT 'query_mode must be either standard or autocomplete' AS message
+    SELECT 'query_mode must be one of standard, autocomplete, phrase, or phrase_prefix' AS message
     FROM query_nodes
     WHERE has_query
       AND list_contains(json_keys(node_json), 'query_mode')
       AND (
           json_type(json_extract(node_json, '$.query_mode')) <> 'VARCHAR'
-          OR lower(json_extract_string(node_json, '$.query_mode')) NOT IN ('standard', 'autocomplete')
+          OR lower(json_extract_string(node_json, '$.query_mode')) NOT IN (
+              'standard',
+              'autocomplete',
+              'phrase',
+              'phrase_prefix'
+          )
       )
     UNION ALL
     SELECT 'boost must be finite and non-negative' AS message

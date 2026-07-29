@@ -45,7 +45,7 @@ create_fts_index(input_table, input_id, *input_values, stemmer = 'porter',
 | `overwrite` | `BOOLEAN` | Whether to overwrite an existing index on a table. Defaults to `0` |
 | `incremental` | `BOOLEAN` | Whether to maintain the FTS index with triggers after inserts and deletes on the input table. Defaults to `0` |
 | `cluster_terms` | `BOOLEAN` | Whether to physically order the generated `terms` table by `termid`, `fieldid`, and `docid`. This can improve query-time pruning for direct reads from the FTS tables. Defaults to `0` |
-| `layered_search` | `BOOLEAN` | Whether to build a dictionary trigram sidecar and layered BM25 search macros for exact, prefix, substring, and fuzzy query expansion. This implies `cluster_terms`. Defaults to `0` |
+| `layered_search` | `BOOLEAN` | Whether to build the dictionary sidecars, positional postings, and layered BM25 search macros used by expanded, autocomplete, phrase, and phrase-prefix queries. This implies `cluster_terms`. Defaults to `0` |
 
 <!-- markdownlint-enable MD056 -->
 
@@ -157,7 +157,7 @@ filtering, and BM25 parameters as the base FTS index.
 | `enable_fuzzy` | `BOOLEAN` | Whether to include Damerau-Levenshtein fuzzy alternatives. Defaults to `true` |
 | `enable_short_fuzzy` | `BOOLEAN` | Whether to use a length-clustered path for short fuzzy alternatives. Defaults to `true` |
 | `expand_exact_terms` | `BOOLEAN` | Whether to also expand a query term that already has an exact dictionary match. Defaults to `false` |
-| `query_mode` | `VARCHAR` | Query execution mode. `standard` uses exact, prefix, substring, and fuzzy dictionary expansion. `autocomplete` keeps preceding tokens exact and matches the final token by raw-token prefix. Defaults to `standard` |
+| `query_mode` | `VARCHAR` | Query execution mode. `standard` uses exact, prefix, substring, and fuzzy dictionary expansion; `autocomplete` keeps preceding tokens exact and matches the final token by raw-token prefix; `phrase` requires exact order and adjacency; `phrase_prefix` treats the final phrase token as a raw-token prefix. Defaults to `standard` |
 | `field_weights` | `MAP(VARCHAR, DOUBLE)` | Non-negative finite weights for indexed fields. Omitted fields have weight `1.0`. Defaults to `NULL` |
 | `field_b` | `MAP(VARCHAR, DOUBLE)` | Per-field BM25 length-normalization parameters. Values must be between `0.0` and `1.0`; omitted fields inherit `b`. Defaults to `NULL` |
 | `scoring_model` | `VARCHAR` | Field scoring model: `bm25f` or `best_fields`. Defaults to `bm25f` |
@@ -187,6 +187,15 @@ raw-token identifier alongside each stemmed term, so autocomplete remains
 correct when multiple raw forms share a stem. It does not use substring or
 fuzzy expansion for the final token.
 
+Phrase mode uses positional postings to require zero-slop matches in one
+indexed field. Positions are assigned after empty tokenizer output is removed
+and before stopword removal, so removed stopwords retain their positional gap.
+Phrase-prefix mode applies the same positional check but expands only the final
+unfinished raw token through the prefix sidecar. `term_limit` bounds those
+deterministically ordered completions; document-frequency filters and fuzzy or
+substring expansion are not applied. A one-token phrase uses standard mode,
+while a one-token phrase-prefix uses autocomplete mode.
+
 Layered search can be static or incremental. With `layered_search = true` and
 `incremental = false`, the sidecar tables are built once and later table
 changes are not visible until the index is rebuilt. With both options enabled,
@@ -194,9 +203,11 @@ the sidecar tables are maintained together with the base FTS index for
 `INSERT` and `DELETE`.
 
 Indexes store a compact field-length list on each document row and corpus
-average lengths in the statistics row. Existing indexes created by an older
-extension version must be dropped and rebuilt before field-aware scoring can be
-used.
+average lengths in the statistics row. Layered indexes additionally store a
+one-based position on every posting. The `index_metadata` table records the
+physical format version, enabled features, indexed fields, and analyzer
+fingerprint. Existing indexes created by an older extension version must be
+dropped and rebuilt before field-aware or positional scoring can be used.
 
 ### Structured Boolean Layered Search
 
@@ -265,16 +276,16 @@ with at least one `must` clause defaults to zero. An explicit
 are added and then multiplied by the group's optional `boost`. Leaf boosts are
 applied to the leaf BM25 score first.
 
-Leaves can select indexed fields with a JSON string array and choose `standard`
-or `autocomplete` query mode independently. Expansion controls and field
-scoring configuration remain macro-level settings so all leaves share the same
-resource limits and field model. `scoring_model := 'bm25f'` uses canonical
-BM25F with optional `field_weights` and per-field length normalization through
-`field_b`; `best_fields` selects the strongest field and optionally incorporates
-the others through `tie_breaker`. Each leaf delegates to `search_layered_bm25`,
-then the Boolean layer combines the resulting scores. The structured layer
-reuses the existing layered index and does not add tables or require an index
-rebuild.
+Leaves can select indexed fields with a JSON string array and choose
+`standard`, `autocomplete`, `phrase`, or `phrase_prefix` query mode
+independently. Expansion controls and field scoring configuration remain
+macro-level settings so all leaves share the same resource limits and field
+model. `scoring_model := 'bm25f'` uses canonical BM25F with optional
+`field_weights` and per-field length normalization through `field_b`;
+`best_fields` selects the strongest field and optionally incorporates the
+others through `tie_breaker`. Each leaf delegates to
+`search_layered_bm25`, then the Boolean layer combines the resulting scores.
+The structured layer reuses the existing layered index.
 
 By default, query trees are limited to 1,024 leaves and a maximum Boolean depth
 of 64. Callers can lower or raise these resource limits with
@@ -495,6 +506,27 @@ FROM fts_main_animal_sounds.search_layered_bm25(
     'han quac',
     fields := 'text_content,author',
     query_mode := 'autocomplete',
+    top_k := 10
+);
+```
+
+Use phrase mode for exact adjacency and phrase-prefix mode when the final token
+is still being typed:
+
+```sql
+SELECT docname, score, rank
+FROM fts_main_animal_sounds.search_layered_bm25(
+    'quacking quacking',
+    fields := 'text_content',
+    query_mode := 'phrase',
+    top_k := 10
+);
+
+SELECT docname, score, rank
+FROM fts_main_animal_sounds.search_layered_bm25(
+    'quacking quac',
+    fields := 'text_content',
+    query_mode := 'phrase_prefix',
     top_k := 10
 );
 ```

@@ -14,6 +14,7 @@ stemmed_stopped AS (
            {{raw_term_select}}
            t.docid AS docid,
            t.fieldid AS fieldid
+           {{build_position_select}}
     FROM tokenized AS t
     WHERE t.w NOT NULL
       AND t.w <> ''
@@ -23,6 +24,7 @@ SELECT ss.term,
        {{raw_term_output}}
        ss.docid,
        ss.fieldid
+       {{build_position_output}}
 FROM stemmed_stopped AS ss;
 
 CREATE TABLE {{fts_schema}}.docs AS
@@ -64,6 +66,7 @@ SELECT build_dict.termid,
        {{rawtermid_select}}
        build_terms.docid,
        build_terms.fieldid
+       {{position_select}}
 FROM temp.{{build_terms_table}} AS build_terms
 JOIN temp.{{build_dict_table}} AS build_dict
   ON build_dict.term = build_terms.term

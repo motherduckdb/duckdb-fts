@@ -1,0 +1,15 @@
+CREATE TABLE {{fts_schema}}.index_metadata AS
+SELECT {{format_version}}::UINTEGER AS format_version,
+       {{incremental}}::BOOLEAN AS incremental,
+       {{cluster_terms}}::BOOLEAN AS cluster_terms,
+       {{layered_search}}::BOOLEAN AS layered_search,
+       {{positions}}::BOOLEAN AS positions,
+       (SELECT list(field ORDER BY fieldid) FROM {{fts_schema}}.fields)::VARCHAR[] AS fields,
+       {{stemmer}}::VARCHAR AS stemmer,
+       {{stopwords}}::VARCHAR AS stopwords,
+       {{tokenizer}}::VARCHAR AS tokenizer,
+       {{ignore}}::VARCHAR AS ignore,
+       {{strip_accents}}::BOOLEAN AS strip_accents,
+       {{lower}}::BOOLEAN AS lower,
+       {{analyzer_config}}::VARCHAR AS analyzer_config,
+       md5({{analyzer_config}})::VARCHAR AS analyzer_fingerprint;
