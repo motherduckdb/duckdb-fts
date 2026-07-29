@@ -11,13 +11,16 @@ include_directories = [
         'third_party/snowball/runtime',
         'third_party/snowball/src_c',
         'third_party/utf8proc/include',
-        'extension/icu/third_party/icu/common',
-        'extension/icu/third_party/icu/i18n',
     ]
 ]
 # source files
 source_files = [
-    os.path.sep.join(x.split('/')) for x in ['extension/fts/fts_extension.cpp', 'extension/fts/fts_indexing.cpp']
+    os.path.sep.join(x.split('/'))
+    for x in [
+        'extension/fts/fts_extension.cpp',
+        'extension/fts/fts_indexing.cpp',
+        'extension/fts/fts_unicode_classifier.cpp',
+    ]
 ]
 # snowball
 source_files += [

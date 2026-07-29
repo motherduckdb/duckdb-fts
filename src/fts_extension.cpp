@@ -11,53 +11,44 @@
 #include "duckdb/function/scalar_function.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
 #include "fts_indexing.hpp"
+#include "fts_unicode_classifier.hpp"
 #include "libstemmer.h"
-#include "unicode/uchar.h"
-#include "unicode/uscript.h"
 #include "utf8proc_wrapper.hpp"
 
 namespace duckdb {
 
-static bool IsOpenSearchStandardSingleTokenScript(UScriptCode script) {
-  return script == USCRIPT_HAN || script == USCRIPT_HIRAGANA;
+static bool IsOpenSearchStandardSingleTokenScript(FTSUnicodeScript script) {
+  return script == FTSUnicodeScript::HAN ||
+         script == FTSUnicodeScript::HIRAGANA;
 }
 
-static bool IsOpenSearchStandardEmoji(UChar32 codepoint) {
-  return u_hasBinaryProperty(codepoint, UCHAR_EMOJI_PRESENTATION) ||
-         u_hasBinaryProperty(codepoint, UCHAR_EXTENDED_PICTOGRAPHIC);
-}
-
-static bool IsOpenSearchStandardCombiningMark(UChar32 codepoint) {
-  auto char_type = u_charType(codepoint);
-  return char_type == U_NON_SPACING_MARK ||
-         char_type == U_COMBINING_SPACING_MARK || char_type == U_ENCLOSING_MARK;
-}
-
-static bool IsOpenSearchStandardIntraTokenPunctuation(UChar32 codepoint) {
+static bool IsOpenSearchStandardIntraTokenPunctuation(int32_t codepoint) {
   return codepoint == '\'' || codepoint == 0x2019 || codepoint == '.' ||
          codepoint == '_';
 }
 
-static bool IsJapaneseProlongedSoundMark(UChar32 codepoint) {
+static bool IsJapaneseProlongedSoundMark(int32_t codepoint) {
   return codepoint == 0x30FC || codepoint == 0xFF70;
 }
 
-static bool IsOpenSearchStandardTokenChar(UChar32 codepoint,
-                                          UScriptCode script) {
-  if (u_isUWhiteSpace(codepoint) || u_ispunct(codepoint)) {
+static bool
+IsOpenSearchStandardTokenChar(int32_t codepoint,
+                              const FTSUnicodeProperties &properties) {
+  if (properties.whitespace || properties.punctuation) {
     return false;
   }
-  return u_isalnum(codepoint) ||
-         u_hasBinaryProperty(codepoint, UCHAR_ALPHABETIC) ||
-         script == USCRIPT_KATAKANA || IsJapaneseProlongedSoundMark(codepoint);
+  return properties.alphabetic || properties.decimal_number ||
+         properties.script == FTSUnicodeScript::KATAKANA ||
+         IsJapaneseProlongedSoundMark(codepoint);
 }
 
-static bool IsOpenSearchStandardContinuationChar(UChar32 codepoint,
-                                                 UScriptCode script) {
-  return !IsOpenSearchStandardSingleTokenScript(script) &&
-         !IsOpenSearchStandardEmoji(codepoint) &&
-         (IsOpenSearchStandardTokenChar(codepoint, script) ||
-          IsOpenSearchStandardCombiningMark(codepoint));
+static bool
+IsOpenSearchStandardContinuationChar(int32_t codepoint,
+                                     const FTSUnicodeProperties &properties) {
+  return !IsOpenSearchStandardSingleTokenScript(properties.script) &&
+         !properties.emoji &&
+         (IsOpenSearchStandardTokenChar(codepoint, properties) ||
+          properties.combining_mark);
 }
 
 template <class LIST_WRITER>
@@ -76,8 +67,8 @@ static void TokenizeOpenSearchStandard(string_t input, LIST_WRITER &list) {
     token_size = 0;
   };
 
-  auto decode_codepoint = [&](idx_t pos, UChar32 &codepoint, int &char_size,
-                              UScriptCode &script) -> bool {
+  auto decode_codepoint = [&](idx_t pos, int32_t &codepoint, int &char_size,
+                              FTSUnicodeProperties &properties) -> bool {
     if (pos >= input_size) {
       return false;
     }
@@ -87,16 +78,15 @@ static void TokenizeOpenSearchStandard(string_t input, LIST_WRITER &list) {
     if (char_size <= 0) {
       return false;
     }
-    UErrorCode status = U_ZERO_ERROR;
-    script = uscript_getScript(codepoint, &status);
-    return U_SUCCESS(status);
+    properties = FTSUnicodeClassifier::Classify(codepoint);
+    return true;
   };
 
   for (idx_t pos = 0; pos < input_size;) {
     int char_size = 0;
-    UChar32 codepoint = 0;
-    UScriptCode script = USCRIPT_UNKNOWN;
-    if (!decode_codepoint(pos, codepoint, char_size, script)) {
+    int32_t codepoint = 0;
+    FTSUnicodeProperties properties{};
+    if (!decode_codepoint(pos, codepoint, char_size, properties)) {
       flush_token();
       pos++;
       continue;
@@ -108,27 +98,28 @@ static void TokenizeOpenSearchStandard(string_t input, LIST_WRITER &list) {
     // OpenSearch-compatible cases local. Combining marks are continuations to
     // preserve decomposed accents such as "cafe\u0301" rather than splitting or
     // dropping the mark.
-    if (IsOpenSearchStandardCombiningMark(codepoint) && token_size > 0) {
+    if (properties.combining_mark && token_size > 0) {
       token_size += UnsafeNumericCast<idx_t>(char_size);
-    } else if (IsOpenSearchStandardSingleTokenScript(script) ||
-               IsOpenSearchStandardEmoji(codepoint)) {
+    } else if (IsOpenSearchStandardSingleTokenScript(properties.script) ||
+               properties.emoji) {
       flush_token();
       list.WriteElement().WriteStringRef(
           string_t(input_data + pos, UnsafeNumericCast<uint32_t>(char_size)));
     } else if (IsOpenSearchStandardIntraTokenPunctuation(codepoint) &&
                token_size > 0) {
-      UChar32 next_codepoint = 0;
+      int32_t next_codepoint = 0;
       int next_char_size = 0;
-      UScriptCode next_script = USCRIPT_UNKNOWN;
+      FTSUnicodeProperties next_properties{};
       auto next_pos = pos + UnsafeNumericCast<idx_t>(char_size);
       if (decode_codepoint(next_pos, next_codepoint, next_char_size,
-                           next_script) &&
-          IsOpenSearchStandardContinuationChar(next_codepoint, next_script)) {
+                           next_properties) &&
+          IsOpenSearchStandardContinuationChar(next_codepoint,
+                                               next_properties)) {
         token_size += UnsafeNumericCast<idx_t>(char_size);
       } else {
         flush_token();
       }
-    } else if (IsOpenSearchStandardTokenChar(codepoint, script)) {
+    } else if (IsOpenSearchStandardTokenChar(codepoint, properties)) {
       if (token_size == 0) {
         token_start = pos;
       }
