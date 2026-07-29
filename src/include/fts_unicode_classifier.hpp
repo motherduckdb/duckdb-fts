@@ -4,7 +4,12 @@
 
 namespace duckdb {
 
-enum class FTSUnicodeScript : uint8_t { OTHER, HAN, HIRAGANA, KATAKANA };
+enum class FTSUnicodeScript : uint8_t {
+  OTHER = 0,
+  HAN = 1,
+  HIRAGANA = 2,
+  KATAKANA = 3
+};
 
 struct FTSUnicodeProperties {
   FTSUnicodeScript script;

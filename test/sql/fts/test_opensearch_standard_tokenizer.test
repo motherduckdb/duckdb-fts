@@ -224,6 +224,18 @@ C2A9
 79
 D9A1
 
+# Preserve Unicode 17 properties from DuckDB's bundled ICU 78.
+query T
+SELECT hex(token)
+FROM (
+    SELECT unnest(fts_tokenize_opensearch_standard(
+        chr(94194) || chr(94199) || '2' || chr(118000) || '3'
+    )) AS token
+)
+----
+F096BFB2
+32F09CB3B033
+
 query T
 SELECT token
 FROM (
