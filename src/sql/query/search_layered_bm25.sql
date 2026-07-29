@@ -48,19 +48,15 @@ df_cap(max_df) AS (
     FROM {{fts_schema}}.stats AS stats
     CROSS JOIN params
 ),
-raw_query_tokens AS (
-    SELECT unnest(tokens) AS raw_token,
-           generate_subscripts(tokens, 1) AS token_offset
-    FROM (
-        SELECT {{fts_schema}}.tokenize(query_string) AS tokens
-    ) AS query_token_list
-),
 positioned_query_tokens AS (
-    SELECT raw_token,
-           row_number() OVER (ORDER BY token_offset)::BIGINT AS token_position
-    FROM raw_query_tokens
-    WHERE raw_token IS NOT NULL
-      AND raw_token <> ''
+    SELECT unnest(tokens) AS raw_token,
+           generate_subscripts(tokens, 1)::BIGINT AS token_position
+    FROM (
+        SELECT list_filter(
+                   {{fts_schema}}.tokenize(query_string),
+                   lambda token: token IS NOT NULL AND token <> ''
+               ) AS tokens
+    ) AS query_token_list
 ),
 analyzed_query_tokens AS (
     SELECT raw_token,
@@ -368,8 +364,11 @@ phrase_tokens AS (
     SELECT raw_token,
            stem(raw_token, {{stemmer}}) AS term,
            token_position,
-           token_position - min(token_position) OVER () AS relative_position,
-           row_number() OVER (ORDER BY token_position)::BIGINT AS phrase_slot
+           token_position - (
+               SELECT min(token_position)
+               FROM analyzed_query_tokens
+           ) AS relative_position,
+           token_position AS phrase_slot
     FROM analyzed_query_tokens
     CROSS JOIN query_shape
     WHERE query_shape.effective_mode IN ('phrase', 'phrase_prefix')
@@ -384,7 +383,7 @@ phrase_exact_slots AS (
       ON term_stats.term = phrase_tokens.term
     CROSS JOIN query_shape
     WHERE query_shape.effective_mode = 'phrase'
-       OR phrase_tokens.phrase_slot < query_shape.token_count
+       OR phrase_tokens.token_position < query_shape.final_position
 ),
 phrase_prefix_input AS (
     SELECT phrase_tokens.raw_token AS query_term,
@@ -398,7 +397,7 @@ phrase_prefix_input AS (
     FROM phrase_tokens
     CROSS JOIN query_shape
     WHERE query_shape.effective_mode = 'phrase_prefix'
-      AND phrase_tokens.phrase_slot = query_shape.token_count
+      AND phrase_tokens.token_position = query_shape.final_position
       AND length(phrase_tokens.raw_token) >= 2
 ),
 phrase_prefix_candidates AS (
@@ -432,16 +431,11 @@ phrase_anchor AS (
     SELECT phrase_slot,
            relative_position,
            termid
-    FROM (
-        SELECT phrase_exact_slots.*,
-               row_number() OVER (
-                   ORDER BY df ASC,
-                            phrase_slot ASC,
-                            termid ASC
-               ) AS anchor_rank
-        FROM phrase_exact_slots
-    ) AS ranked_slots
-    WHERE anchor_rank = 1
+    FROM phrase_exact_slots
+    ORDER BY df ASC,
+             phrase_slot ASC,
+             termid ASC
+    LIMIT 1
 ),
 phrase_candidate_starts AS (
     SELECT terms.docid,
@@ -513,10 +507,13 @@ phrase_idf AS (
     FROM phrase_exact_slots AS slots
     CROSS JOIN {{fts_schema}}.stats AS stats
 ),
-phrase_field_tf AS (
-    SELECT phrase_matches.docid,
+phrase_field_term_tf AS (
+    SELECT NULL::BIGINT AS termid,
+           NULL::BIGINT AS rawtermid,
+           phrase_matches.docid,
            phrase_matches.fieldid,
-           any_value(phrase_idf.phrase_idf) AS phrase_idf,
+           any_value(phrase_idf.phrase_idf) AS idf,
+           1.0::DOUBLE AS expansion_weight,
            count(*)::DOUBLE AS tf
     FROM phrase_matches
     CROSS JOIN phrase_idf
@@ -565,12 +562,17 @@ selected_terms AS (
              termid,
              rawtermid
 ),
-field_term_tf AS (
+standard_field_term_tf AS (
     SELECT selected_terms.termid,
            selected_terms.rawtermid,
            terms.docid,
            terms.fieldid,
-           selected_terms.df,
+           any_value(
+               log(
+                   ((((stats.num_docs - selected_terms.df) + 0.5)
+                       / (selected_terms.df + 0.5)) + 1)
+               )
+           ) AS idf,
            max(selected_terms.expansion_weight) AS expansion_weight,
            count(*) AS tf
     FROM selected_terms
@@ -580,44 +582,27 @@ field_term_tf AS (
          selected_terms.rawtermid IS NULL
          OR terms.rawtermid = selected_terms.rawtermid
      )
+    CROSS JOIN {{fts_schema}}.stats AS stats
     WHERE terms.fieldid IN (SELECT fieldid FROM field_config)
     GROUP BY selected_terms.termid,
              selected_terms.rawtermid,
              terms.docid,
-             terms.fieldid,
-             selected_terms.df
+             terms.fieldid
+),
+field_term_tf AS (
+    SELECT *
+    FROM standard_field_term_tf
+    UNION ALL
+    SELECT *
+    FROM phrase_field_term_tf
 ),
 {{field_scoring_score_ctes}},
-{{phrase_scoring_ctes}},
-combined_scores AS (
-    SELECT scores.*
-    FROM scores
-    WHERE lower(query_mode::VARCHAR) IN ('standard', 'autocomplete')
-    UNION ALL
-    SELECT scores.*
-    FROM scores
-    CROSS JOIN query_shape
-    WHERE lower(query_mode::VARCHAR) = 'phrase'
-      AND query_shape.effective_mode = 'standard'
-    UNION ALL
-    SELECT scores.*
-    FROM scores
-    CROSS JOIN query_shape
-    WHERE lower(query_mode::VARCHAR) = 'phrase_prefix'
-      AND query_shape.effective_mode = 'autocomplete'
-    UNION ALL
-    SELECT phrase_scores.*
-    FROM phrase_scores
-    CROSS JOIN query_shape
-    WHERE lower(query_mode::VARCHAR) IN ('phrase', 'phrase_prefix')
-      AND query_shape.effective_mode IN ('phrase', 'phrase_prefix')
-),
 ranked AS (
     SELECT docs.name AS docname,
-           combined_scores.score,
-           row_number() OVER (ORDER BY combined_scores.score DESC, docs.name) AS rank
-    FROM combined_scores
-    JOIN {{fts_schema}}.docs AS docs ON docs.docid = combined_scores.docid
+           scores.score,
+           row_number() OVER (ORDER BY scores.score DESC, docs.name) AS rank
+    FROM scores
+    JOIN {{fts_schema}}.docs AS docs ON docs.docid = scores.docid
 ),
 results AS (
     SELECT docname,

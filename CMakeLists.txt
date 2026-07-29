@@ -22,7 +22,6 @@ set(FTS_SQL_ASSETS
     "FIELD_SCORING_VALIDATION_CTES|src/sql/query/field_scoring_validation_ctes.sql"
     "FIELD_SCORING_CONFIG_CTES|src/sql/query/field_scoring_config_ctes.sql"
     "FIELD_SCORING_SCORE_CTES|src/sql/query/field_scoring_score_ctes.sql"
-    "PHRASE_SCORING_CTES|src/sql/query/phrase_scoring_ctes.sql"
     "MATCH_BM25|src/sql/query/match_bm25.sql"
     "SEARCH_LAYERED_BM25|src/sql/query/search_layered_bm25.sql"
     "MATCH_LAYERED_BM25|src/sql/query/match_layered_bm25.sql"

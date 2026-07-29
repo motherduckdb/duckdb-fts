@@ -265,11 +265,6 @@ static string FieldScoringScoreCTEs(const QualifiedName &qname) {
                            {{"fts_schema", GetFTSSchemaArgument(qname)}});
 }
 
-static string PhraseScoringCTEs(const QualifiedName &qname) {
-  return RenderSQLTemplate(fts_sql::PHRASE_SCORING_CTES,
-                           {{"fts_schema", GetFTSSchemaArgument(qname)}});
-}
-
 static string MatchMacroScript(const QualifiedName &qname,
                                const string &stemmer) {
   return RenderSQLTemplate(
@@ -291,9 +286,7 @@ static string LayeredSearchTableMacroScript(const QualifiedName &qname,
        {"field_scoring_config_ctes",
         SQLTemplateArgument::TrustedSQL(FieldScoringConfigCTEs(qname))},
        {"field_scoring_score_ctes",
-        SQLTemplateArgument::TrustedSQL(FieldScoringScoreCTEs(qname))},
-       {"phrase_scoring_ctes",
-        SQLTemplateArgument::TrustedSQL(PhraseScoringCTEs(qname))}});
+        SQLTemplateArgument::TrustedSQL(FieldScoringScoreCTEs(qname))}});
 }
 
 static string LayeredMatchMacroScript(const QualifiedName &qname) {

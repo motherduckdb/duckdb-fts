@@ -190,6 +190,14 @@ p12
 p4
 p5
 
+# Phrase-prefix uses the original final-token position when stopwords create a
+# gap in the analyzed query.
+query I rowsort
+EXECUTE phrase_docnames('vector the dat', NULL, 32, 0.15, 50000, true, true, true, true, 1.2, 0.75, 'phrase_prefix')
+----
+p2
+p9
+
 # Standard expansion switches and document-frequency caps do not constrain the
 # dedicated final-token prefix path.
 query I rowsort
