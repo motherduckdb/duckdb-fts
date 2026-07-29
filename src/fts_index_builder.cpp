@@ -142,8 +142,7 @@ static string IndexTablesScript(
       cluster_terms
           ? (layered_search
                  ? "ORDER BY build_dict.termid, build_raw_dict.rawtermid, "
-                   "build_terms.fieldid, build_terms.docid, "
-                   "build_terms.position"
+                   "build_terms.fieldid, build_terms.docid"
                  : "ORDER BY build_dict.termid, build_terms.fieldid, "
                    "build_terms.docid")
           : "";

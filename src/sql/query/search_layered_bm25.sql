@@ -22,6 +22,27 @@ WITH params(term_limit, max_df_ratio, max_df, enable_prefix, enable_substring, e
            b::DOUBLE
 ),
 {{field_scoring_config_ctes}}
+search_validation_errors AS (
+    SELECT message
+    FROM (
+        SELECT 10 AS priority,
+               'query_mode must be one of standard, autocomplete, phrase, or phrase_prefix' AS message
+        WHERE query_mode IS NULL
+           OR lower(query_mode::VARCHAR) NOT IN (
+               'standard',
+               'autocomplete',
+               'phrase',
+               'phrase_prefix'
+           )
+        UNION ALL
+        SELECT 20 AS priority,
+               message
+        FROM validation_errors
+    ) AS raw_search_validation_errors
+    ORDER BY priority,
+             message
+    LIMIT 1
+),
 df_cap(max_df) AS (
     SELECT least(params.max_df, ceil(stats.num_docs * params.max_df_ratio)::BIGINT)
     FROM {{fts_schema}}.stats AS stats
@@ -454,7 +475,7 @@ phrase_exact_matches AS (
         ELSE query_shape.token_count
     END
 ),
-phrase_prefix_postings AS MATERIALIZED (
+phrase_prefix_postings AS (
     SELECT terms.docid,
            terms.fieldid,
            terms.position,
@@ -469,7 +490,8 @@ phrase_matches AS (
     SELECT phrase_exact_matches.*
     FROM phrase_exact_matches
     CROSS JOIN query_shape
-    WHERE query_shape.effective_mode = 'phrase'
+    WHERE lower(query_mode::VARCHAR) = 'phrase'
+      AND query_shape.effective_mode = 'phrase'
     UNION ALL
     SELECT DISTINCT exact_matches.docid,
                     exact_matches.fieldid,
@@ -481,7 +503,8 @@ phrase_matches AS (
      AND prefix_postings.position::BIGINT
          = exact_matches.phrase_start + prefix_postings.relative_position
     CROSS JOIN query_shape
-    WHERE query_shape.effective_mode = 'phrase_prefix'
+    WHERE lower(query_mode::VARCHAR) = 'phrase_prefix'
+      AND query_shape.effective_mode = 'phrase_prefix'
 ),
 phrase_idf AS (
     SELECT sum(
@@ -569,13 +592,25 @@ field_term_tf AS (
 combined_scores AS (
     SELECT scores.*
     FROM scores
+    WHERE lower(query_mode::VARCHAR) IN ('standard', 'autocomplete')
+    UNION ALL
+    SELECT scores.*
+    FROM scores
     CROSS JOIN query_shape
-    WHERE query_shape.effective_mode IN ('standard', 'autocomplete')
+    WHERE lower(query_mode::VARCHAR) = 'phrase'
+      AND query_shape.effective_mode = 'standard'
+    UNION ALL
+    SELECT scores.*
+    FROM scores
+    CROSS JOIN query_shape
+    WHERE lower(query_mode::VARCHAR) = 'phrase_prefix'
+      AND query_shape.effective_mode = 'autocomplete'
     UNION ALL
     SELECT phrase_scores.*
     FROM phrase_scores
     CROSS JOIN query_shape
-    WHERE query_shape.effective_mode IN ('phrase', 'phrase_prefix')
+    WHERE lower(query_mode::VARCHAR) IN ('phrase', 'phrase_prefix')
+      AND query_shape.effective_mode IN ('phrase', 'phrase_prefix')
 ),
 ranked AS (
     SELECT docs.name AS docname,
@@ -598,5 +633,5 @@ UNION ALL
 SELECT error(message)::VARCHAR AS docname,
        NULL::DOUBLE AS score,
        NULL::BIGINT AS rank
-FROM validation_errors
+FROM search_validation_errors
 ORDER BY rank;

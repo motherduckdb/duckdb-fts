@@ -268,8 +268,7 @@ static string InsertTriggerScript(const QualifiedName &qname,
        {"insert_terms_order_by",
         SQLTemplateArgument::TrustedSQL(
             layered_search
-                ? "ORDER BY d.termid, rd.rawtermid, ss.fieldid, ss.docid, "
-                  "ss.position"
+                ? "ORDER BY d.termid, rd.rawtermid, ss.fieldid, ss.docid"
                 : "")},
        {"input_id", SQLTemplateArgument::Identifier(input_id)},
        {"layered_insert_df_triggers",

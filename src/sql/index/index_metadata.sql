@@ -1,4 +1,4 @@
-CREATE TABLE {{fts_schema}}.index_metadata AS
+CREATE VIEW {{fts_schema}}.index_metadata AS
 SELECT {{format_version}}::UINTEGER AS format_version,
        {{incremental}}::BOOLEAN AS incremental,
        {{cluster_terms}}::BOOLEAN AS cluster_terms,

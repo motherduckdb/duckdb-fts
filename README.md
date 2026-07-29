@@ -204,7 +204,7 @@ the sidecar tables are maintained together with the base FTS index for
 
 Indexes store a compact field-length list on each document row and corpus
 average lengths in the statistics row. Layered indexes additionally store a
-one-based position on every posting. The `index_metadata` table records the
+one-based position on every posting. The `index_metadata` view records the
 physical format version, enabled features, indexed fields, and analyzer
 fingerprint. Existing indexes created by an older extension version must be
 dropped and rebuilt before field-aware or positional scoring can be used.
