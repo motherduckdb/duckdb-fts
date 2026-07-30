@@ -3,7 +3,7 @@ normalized_field_terms AS (
            field_term_tf.termid,
            field_term_tf.rawtermid,
            field_term_tf.fieldid,
-           field_term_tf.df,
+           field_term_tf.idf,
            field_term_tf.expansion_weight,
            field_config.field_weight,
            field_term_tf.tf / (
@@ -23,7 +23,7 @@ bm25f_term_frequencies AS (
     SELECT docid,
            termid,
            rawtermid,
-           any_value(df) AS df,
+           any_value(idf) AS idf,
            max(expansion_weight) AS expansion_weight,
            sum(field_weight * normalized_tf) AS pseudo_tf
     FROM normalized_field_terms
@@ -35,14 +35,13 @@ bm25f_scores AS (
     SELECT bm25f_term_frequencies.docid,
            sum(
                expansion_weight
-               * log(((((stats.num_docs - df) + 0.5) / (df + 0.5)) + 1))
+               * idf
                * (
                    (pseudo_tf * (k + 1))
                    / (pseudo_tf + k)
                )
            ) AS score
     FROM bm25f_term_frequencies
-    CROSS JOIN {{fts_schema}}.stats AS stats
     GROUP BY bm25f_term_frequencies.docid
 ),
 best_field_term_scores AS (
@@ -50,13 +49,12 @@ best_field_term_scores AS (
            fieldid,
            field_weight,
            expansion_weight
-           * log(((((stats.num_docs - df) + 0.5) / (df + 0.5)) + 1))
+           * idf
            * (
                (normalized_tf * (k + 1))
                / (normalized_tf + k)
            ) AS term_score
     FROM normalized_field_terms
-    CROSS JOIN {{fts_schema}}.stats AS stats
 ),
 per_field_scores AS (
     SELECT docid,

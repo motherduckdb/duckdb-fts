@@ -1,0 +1,5 @@
+benchmark/fts/layered_autocomplete/smoke/phrase_common.benchmark
+benchmark/fts/layered_autocomplete/smoke/phrase_selective.benchmark
+benchmark/fts/layered_autocomplete/smoke/phrase_repeated.benchmark
+benchmark/fts/layered_autocomplete/smoke/phrase_prefix_short.benchmark
+benchmark/fts/layered_autocomplete/smoke/phrase_prefix_long.benchmark

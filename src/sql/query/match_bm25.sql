@@ -50,16 +50,21 @@ CREATE MACRO {{fts_schema}}.match_bm25(docname, query_string, fields := NULL, k 
                NULL::BIGINT AS rawtermid,
                qterms.docid,
                qterms.fieldid,
-               dict.df,
+               any_value(
+                   log(
+                       ((((stats.num_docs - dict.df) + 0.5)
+                           / (dict.df + 0.5)) + 1)
+                   )
+               ) AS idf,
                1.0::DOUBLE AS expansion_weight,
                count(*) AS tf
         FROM qterms
         JOIN cdocs ON cdocs.docid = qterms.docid
         JOIN {{fts_schema}}.dict AS dict ON dict.termid = qterms.termid
+        CROSS JOIN {{fts_schema}}.stats AS stats
         GROUP BY qterms.docid,
                  qterms.fieldid,
-                 qterms.termid,
-                 dict.df
+                 qterms.termid
     ),
     {{field_scoring_score_ctes}}
     SELECT score

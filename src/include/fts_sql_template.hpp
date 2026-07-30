@@ -15,6 +15,7 @@ public:
   static SQLTemplateArgument QualifiedIdentifier(const vector<string> &parts);
   static SQLTemplateArgument StringLiteral(const string &value);
   static SQLTemplateArgument Integer(int64_t value);
+  static SQLTemplateArgument Boolean(bool value);
   static SQLTemplateArgument TrustedSQL(const string &value);
 
   const string &GetSQL() const;

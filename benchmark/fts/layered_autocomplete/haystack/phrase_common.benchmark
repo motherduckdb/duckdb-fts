@@ -1,0 +1,5 @@
+template benchmark/fts/layered_autocomplete/templates/phrase_query.benchmark.in
+display_name=FTS common phrase query (1M)
+rows=1000000
+query_string=workspace item
+query_mode=phrase

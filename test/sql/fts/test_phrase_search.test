@@ -1,0 +1,670 @@
+# name: test/sql/fts/test_phrase_search.test
+# description: Positional phrase and phrase-prefix search
+# group: [fts]
+
+require skip_reload
+
+require fts
+
+require json
+
+require no_alternative_verify
+
+statement ok
+CREATE TABLE phrase_docs(
+    id VARCHAR NOT NULL,
+    title VARCHAR,
+    body VARCHAR
+)
+
+statement ok
+INSERT INTO phrase_docs VALUES
+    ('p1', 'vector database vector database', 'reference'),
+    ('p2', 'vector scalable database', ''),
+    ('p3', 'database vector', ''),
+    ('p4', 'vector data', ''),
+    ('p5', 'vector datalake', ''),
+    ('p6', 'vector', 'database'),
+    ('p7', 'alpha beta alpha beta', ''),
+    ('p8', 'running database', ''),
+    ('p9', 'vector the database', ''),
+    ('p10', 'vector, database', ''),
+    ('p11', 'vector,,, database', ''),
+    ('p12', 'other', 'vector database')
+
+statement ok
+PRAGMA create_fts_index(
+    'phrase_docs',
+    'id',
+    'title',
+    'body',
+    stemmer='porter',
+    stopwords='english',
+    layered_search=true,
+    incremental=true
+)
+
+# Layered postings store one-based positions independently for each field.
+query IIII
+SELECT docs.name, dict.term, terms.fieldid, terms.position
+FROM fts_main_phrase_docs.terms AS terms
+JOIN fts_main_phrase_docs.docs AS docs USING (docid)
+JOIN fts_main_phrase_docs.dict AS dict USING (termid)
+WHERE docs.name IN ('p1', 'p6')
+ORDER BY docs.name, terms.fieldid, terms.position
+----
+p1	vector	0	1
+p1	databas	0	2
+p1	vector	0	3
+p1	databas	0	4
+p1	refer	1	1
+p6	vector	0	1
+p6	databas	1	1
+
+query T
+SELECT data_type
+FROM duckdb_columns()
+WHERE schema_name = 'fts_main_phrase_docs'
+  AND table_name = 'terms'
+  AND column_name = 'position'
+----
+UINTEGER
+
+# Index metadata describes the physical format and canonical analyzer.
+query IIIIIIII
+SELECT format_version,
+       incremental,
+       cluster_terms,
+       layered_search,
+       positions,
+       fields = ['title', 'body'],
+       length(analyzer_fingerprint),
+       analyzer_fingerprint = md5(analyzer_config)
+FROM fts_main_phrase_docs.index_metadata
+----
+2	true	true	true	true	true	32	true
+
+# Analyzer identity follows effective stopword contents, while source names are
+# retained separately as provenance.
+statement ok
+CREATE TABLE fingerprint_stopwords_a(sw VARCHAR)
+
+statement ok
+INSERT INTO fingerprint_stopwords_a VALUES ('alpha'), ('beta')
+
+statement ok
+CREATE TABLE fingerprint_stopwords_b(sw VARCHAR)
+
+statement ok
+INSERT INTO fingerprint_stopwords_b VALUES ('beta'), ('alpha'), ('alpha')
+
+statement ok
+CREATE TABLE fingerprint_stopwords_c(sw VARCHAR)
+
+statement ok
+INSERT INTO fingerprint_stopwords_c VALUES ('alpha'), ('gamma')
+
+statement ok
+CREATE TABLE fingerprint_docs_a(id INTEGER, body VARCHAR)
+
+statement ok
+INSERT INTO fingerprint_docs_a VALUES (1, 'alpha beta gamma')
+
+statement ok
+CREATE TABLE fingerprint_docs_b AS FROM fingerprint_docs_a
+
+statement ok
+CREATE TABLE fingerprint_docs_c AS FROM fingerprint_docs_a
+
+statement ok
+PRAGMA create_fts_index(
+    'fingerprint_docs_a',
+    'id',
+    'body',
+    stemmer='none',
+    stopwords='fingerprint_stopwords_a',
+    layered_search=true
+)
+
+statement ok
+PRAGMA create_fts_index(
+    'fingerprint_docs_b',
+    'id',
+    'body',
+    stemmer='none',
+    stopwords='fingerprint_stopwords_b',
+    layered_search=true
+)
+
+statement ok
+PRAGMA create_fts_index(
+    'fingerprint_docs_c',
+    'id',
+    'body',
+    stemmer='none',
+    stopwords='fingerprint_stopwords_c',
+    layered_search=true
+)
+
+query IIIIII
+SELECT a.analyzer_config = b.analyzer_config,
+       a.analyzer_fingerprint = b.analyzer_fingerprint,
+       a.stopwords <> b.stopwords,
+       a.analyzer_config <> c.analyzer_config,
+       a.analyzer_fingerprint <> c.analyzer_fingerprint,
+       a.analyzer_fingerprint = md5(a.analyzer_config)
+           AND b.analyzer_fingerprint = md5(b.analyzer_config)
+           AND c.analyzer_fingerprint = md5(c.analyzer_config)
+FROM fts_main_fingerprint_docs_a.index_metadata AS a,
+     fts_main_fingerprint_docs_b.index_metadata AS b,
+     fts_main_fingerprint_docs_c.index_metadata AS c
+----
+true	true	true	true	true	true
+
+# Prepare the large macro once, then execute the semantic matrix with independent
+# scalar parameters. This preserves per-query state and keeps debug builds
+# practical.
+statement ok
+PREPARE phrase_docnames AS
+SELECT docname
+FROM fts_main_phrase_docs.search_layered_bm25(
+    $1,
+    fields := $2,
+    top_k := NULL,
+    k := $10,
+    b := $11,
+    term_limit := $3,
+    max_df_ratio := $4,
+    max_df := $5,
+    enable_prefix := $6,
+    enable_substring := $7,
+    enable_fuzzy := $8,
+    enable_short_fuzzy := $9,
+    query_mode := $12
+)
+ORDER BY rank
+
+# Exact phrase matching requires order and adjacency within one field.
+query I rowsort
+EXECUTE phrase_docnames('vector database', NULL, 32, 0.15, 50000, true, true, true, true, 1.2, 0.75, 'phrase')
+----
+p1
+p10
+p11
+p12
+
+query I
+EXECUTE phrase_docnames('database vector', NULL, 32, 0.15, 50000, true, true, true, true, 1.2, 0.75, 'phrase')
+----
+p3
+p1
+
+query I
+EXECUTE phrase_docnames('vector missing', NULL, 32, 0.15, 50000, true, true, true, true, 1.2, 0.75, 'phrase')
+----
+
+# Internal stopwords retain a positional gap. Any indexed token may occupy the
+# omitted position, matching the analyzer's positional semantics.
+query I rowsort
+EXECUTE phrase_docnames('vector the database', NULL, 32, 0.15, 50000, true, true, true, true, 1.2, 0.75, 'phrase')
+----
+p2
+p9
+
+# Punctuation and repeated delimiters do not create positional gaps.
+query I rowsort
+EXECUTE phrase_docnames('vector database', 'title', 32, 0.15, 50000, true, true, true, true, 1.2, 0.75, 'phrase')
+----
+p1
+p10
+p11
+
+# Query and index terms use the configured stemmer.
+query I
+EXECUTE phrase_docnames('run database', NULL, 32, 0.15, 50000, true, true, true, true, 1.2, 0.75, 'phrase')
+----
+p8
+
+# Repeated slots remain distinct and phrase frequency counts phrase starts.
+query I
+EXECUTE phrase_docnames('alpha beta alpha', NULL, 32, 0.15, 50000, true, true, true, true, 1.2, 0.75, 'phrase')
+----
+p7
+
+statement ok
+PREPARE phrase_tf_score AS
+SELECT abs(hits.score - expected.score) < 1e-12
+FROM fts_main_phrase_docs.search_layered_bm25(
+    'alpha beta',
+    query_mode := 'phrase',
+    fields := 'title',
+    k := 1.2,
+    b := 0.0
+) AS hits
+CROSS JOIN (
+    SELECT sum(
+               log(((((stats.num_docs - dict.df) + 0.5) / (dict.df + 0.5)) + 1))
+           ) * ((2.0 * 2.2) / (2.0 + 1.2)) AS score
+    FROM fts_main_phrase_docs.dict AS dict
+    CROSS JOIN fts_main_phrase_docs.stats AS stats
+    WHERE dict.term IN ('alpha', 'beta')
+) AS expected
+WHERE hits.docname = 'p7'
+
+query I
+EXECUTE phrase_tf_score
+----
+true
+
+# Phrase-prefix expands only the final raw token and still verifies positions.
+query I rowsort
+EXECUTE phrase_docnames('vector dat', NULL, 32, 0.15, 50000, true, true, true, true, 1.2, 0.75, 'phrase_prefix')
+----
+p1
+p10
+p11
+p12
+p4
+p5
+
+# Phrase-prefix uses the original final-token position when stopwords create a
+# gap in the analyzed query.
+query I rowsort
+EXECUTE phrase_docnames('vector the dat', NULL, 32, 0.15, 50000, true, true, true, true, 1.2, 0.75, 'phrase_prefix')
+----
+p2
+p9
+
+# Standard expansion switches and document-frequency caps do not constrain the
+# dedicated final-token prefix path.
+query I rowsort
+EXECUTE phrase_docnames('vector dat', NULL, 32, 0.0, 0, false, false, false, false, 1.2, 0.75, 'phrase_prefix')
+----
+p1
+p10
+p11
+p12
+p4
+p5
+
+# Expansion order prefers the rarest shortest term, then an exact completion.
+query I
+EXECUTE phrase_docnames('vector dat', NULL, 1, 0.15, 50000, true, true, true, true, 1.2, 0.75, 'phrase_prefix')
+----
+p4
+
+query I
+EXECUTE phrase_docnames('vector data', NULL, 1, 0.15, 50000, true, true, true, true, 1.2, 0.75, 'phrase_prefix')
+----
+p4
+
+# The unfinished prefix is excluded from phrase-prefix IDF.
+statement ok
+PREPARE phrase_prefix_score AS
+SELECT abs(hits.score - expected.score) < 1e-12
+FROM fts_main_phrase_docs.search_layered_bm25(
+    'vector dat',
+    query_mode := 'phrase_prefix',
+    fields := 'title',
+    term_limit := 1,
+    k := 1.2,
+    b := 0.0
+) AS hits
+CROSS JOIN (
+    SELECT log(((((stats.num_docs - dict.df) + 0.5) / (dict.df + 0.5)) + 1)) AS score
+    FROM fts_main_phrase_docs.dict AS dict
+    CROSS JOIN fts_main_phrase_docs.stats AS stats
+    WHERE dict.term = 'vector'
+) AS expected
+WHERE hits.docname = 'p4'
+
+query I
+EXECUTE phrase_prefix_score
+----
+true
+
+query I
+EXECUTE phrase_docnames('vector d', NULL, 32, 0.15, 50000, true, true, true, true, 1.2, 0.75, 'phrase_prefix')
+----
+
+query I
+EXECUTE phrase_docnames('the', NULL, 32, 0.15, 50000, true, true, true, true, 1.2, 0.75, 'phrase')
+----
+
+# Single-token phrase modes are exact/autocomplete fallbacks.
+statement ok
+PREPARE fallback_compare AS
+SELECT count(*)
+FROM fts_main_phrase_docs.search_layered_bm25($1, query_mode := $2) AS lhs
+FULL OUTER JOIN fts_main_phrase_docs.search_layered_bm25($1, query_mode := $3) AS rhs
+  ON lhs.docname = rhs.docname
+WHERE lhs.docname IS NULL
+   OR rhs.docname IS NULL
+   OR lhs.score IS DISTINCT FROM rhs.score
+   OR lhs.rank IS DISTINCT FROM rhs.rank
+
+query I
+EXECUTE fallback_compare('vector', 'phrase', 'standard')
+----
+0
+
+query I
+EXECUTE fallback_compare('dat', 'phrase_prefix', 'autocomplete')
+----
+0
+
+# Scalar and structured Boolean entry points forward phrase modes.
+query I rowsort
+SELECT id
+FROM (
+    SELECT id,
+           fts_main_phrase_docs.match_layered_bm25(
+               id,
+               'vector database',
+               query_mode := 'phrase'
+           ) AS score
+    FROM phrase_docs
+) AS scored
+WHERE score IS NOT NULL
+----
+p1
+p10
+p11
+p12
+
+query I rowsort
+SELECT docname
+FROM fts_main_phrase_docs.search_layered_bm25_query(
+    '{"query":"vector database","query_mode":"phrase"}'::JSON
+)
+----
+p1
+p10
+p11
+p12
+
+query I rowsort
+SELECT docname
+FROM fts_main_phrase_docs.search_layered_bm25_query(
+    '{
+      "must": [{"query":"vector dat","query_mode":"phrase_prefix"}],
+      "must_not": [{"query":"reference"}]
+    }'::JSON
+)
+----
+p10
+p11
+p12
+p4
+p5
+
+# Multi-row lateral phrase calls retain positional state per input query.
+statement ok
+CREATE TABLE lateral_phrase_docs(id VARCHAR NOT NULL, body VARCHAR)
+
+statement ok
+INSERT INTO lateral_phrase_docs VALUES
+    ('adjacent', 'alpha beta'),
+    ('gap', 'alpha x beta')
+
+statement ok
+PRAGMA create_fts_index(
+    'lateral_phrase_docs',
+    'id',
+    'body',
+    stemmer='none',
+    stopwords='english',
+    layered_search=true
+)
+
+statement ok
+CREATE TABLE lateral_phrase_queries(query VARCHAR)
+
+statement ok
+INSERT INTO lateral_phrase_queries VALUES
+    ('alpha beta'),
+    ('alpha the beta')
+
+query II rowsort
+SELECT queries.query,
+       hits.docname
+FROM lateral_phrase_queries AS queries
+CROSS JOIN LATERAL fts_main_lateral_phrase_docs.search_layered_bm25(
+    queries.query,
+    query_mode := 'phrase',
+    top_k := NULL
+) AS hits
+----
+alpha beta	adjacent
+alpha the beta	gap
+
+statement ok
+DELETE FROM lateral_phrase_queries
+
+statement ok
+INSERT INTO lateral_phrase_queries VALUES
+    ('alpha be'),
+    ('alpha the be')
+
+query II rowsort
+SELECT queries.query,
+       hits.docname
+FROM lateral_phrase_queries AS queries
+CROSS JOIN LATERAL fts_main_lateral_phrase_docs.search_layered_bm25(
+    queries.query,
+    query_mode := 'phrase_prefix',
+    top_k := NULL
+) AS hits
+----
+alpha be	adjacent
+alpha the be	gap
+
+query I rowsort
+SELECT docname
+FROM fts_main_lateral_phrase_docs.search_layered_bm25_query(
+    '{
+      "should": [
+        {"query":"alpha beta","query_mode":"phrase"},
+        {"query":"alpha the beta","query_mode":"phrase"}
+      ],
+      "minimum_should_match": 1
+    }'::JSON,
+    top_k := NULL
+)
+----
+adjacent
+gap
+
+# Phrase scores retain BM25F and best-fields field behavior.
+statement ok
+CREATE TABLE field_phrase_docs(
+    id VARCHAR NOT NULL,
+    title VARCHAR,
+    body VARCHAR
+)
+
+statement ok
+INSERT INTO field_phrase_docs VALUES
+    ('a', 'alpha beta', ''),
+    ('b', '', 'alpha beta'),
+    ('c', 'alpha beta', 'alpha beta')
+
+statement ok
+PRAGMA create_fts_index(
+    'field_phrase_docs',
+    'id',
+    'title',
+    'body',
+    stemmer='none',
+    stopwords='none',
+    layered_search=true
+)
+
+query I
+SELECT string_agg(docname, ',' ORDER BY rank)
+FROM fts_main_field_phrase_docs.search_layered_bm25(
+    'alpha beta',
+    query_mode := 'phrase',
+    field_weights := MAP {'title': 4.0, 'body': 1.0},
+    b := 0.0,
+    scoring_model := 'bm25f'
+)
+----
+c,a,b
+
+query I
+SELECT with_tie.score > without_tie.score
+FROM fts_main_field_phrase_docs.search_layered_bm25(
+    'alpha beta',
+    query_mode := 'phrase',
+    field_weights := MAP {'title': 4.0, 'body': 1.0},
+    b := 0.0,
+    scoring_model := 'best_fields',
+    tie_breaker := 0.5
+) AS with_tie
+JOIN fts_main_field_phrase_docs.search_layered_bm25(
+    'alpha beta',
+    query_mode := 'phrase',
+    field_weights := MAP {'title': 4.0, 'body': 1.0},
+    b := 0.0,
+    scoring_model := 'best_fields'
+) AS without_tie USING (docname)
+WHERE docname = 'c'
+----
+true
+
+# Incremental positions compact ignored delimiters, tolerate NULL fields, and
+# match a clean rebuild.
+statement ok
+INSERT INTO phrase_docs VALUES ('p13', '...vector,,, database vector!!!', NULL)
+
+statement ok
+INSERT INTO phrase_docs VALUES ('p14', 'vector 123 datanova!!!', '')
+
+query II
+SELECT dict.term, terms.position
+FROM fts_main_phrase_docs.terms AS terms
+JOIN fts_main_phrase_docs.docs AS docs USING (docid)
+JOIN fts_main_phrase_docs.dict AS dict USING (termid)
+WHERE docs.name = 'p13'
+ORDER BY terms.position
+----
+vector	1
+databas	2
+vector	3
+
+query I
+EXECUTE phrase_docnames('vector datan', NULL, 32, 0.15, 50000, true, true, true, true, 1.2, 0.75, 'phrase_prefix')
+----
+p14
+
+statement ok
+CREATE TABLE phrase_rebuild AS SELECT * FROM phrase_docs
+
+statement ok
+PRAGMA create_fts_index(
+    'phrase_rebuild',
+    'id',
+    'title',
+    'body',
+    stemmer='porter',
+    stopwords='english',
+    layered_search=true
+)
+
+query I
+SELECT count(*)
+FROM (
+    (
+        SELECT docs.name, dict.term, terms.rawtermid, terms.fieldid, terms.position
+        FROM fts_main_phrase_docs.terms AS terms
+        JOIN fts_main_phrase_docs.docs AS docs USING (docid)
+        JOIN fts_main_phrase_docs.dict AS dict USING (termid)
+        EXCEPT ALL
+        SELECT docs.name, dict.term, terms.rawtermid, terms.fieldid, terms.position
+        FROM fts_main_phrase_rebuild.terms AS terms
+        JOIN fts_main_phrase_rebuild.docs AS docs USING (docid)
+        JOIN fts_main_phrase_rebuild.dict AS dict USING (termid)
+    )
+    UNION ALL
+    (
+        SELECT docs.name, dict.term, terms.rawtermid, terms.fieldid, terms.position
+        FROM fts_main_phrase_rebuild.terms AS terms
+        JOIN fts_main_phrase_rebuild.docs AS docs USING (docid)
+        JOIN fts_main_phrase_rebuild.dict AS dict USING (termid)
+        EXCEPT ALL
+        SELECT docs.name, dict.term, terms.rawtermid, terms.fieldid, terms.position
+        FROM fts_main_phrase_docs.terms AS terms
+        JOIN fts_main_phrase_docs.docs AS docs USING (docid)
+        JOIN fts_main_phrase_docs.dict AS dict USING (termid)
+    )
+)
+----
+0
+
+statement ok
+PREPARE rebuild_compare AS
+SELECT count(*)
+FROM fts_main_phrase_docs.search_layered_bm25($1, query_mode := $2) AS incremental_hits
+FULL OUTER JOIN fts_main_phrase_rebuild.search_layered_bm25($1, query_mode := $2) AS rebuilt_hits
+  ON incremental_hits.docname = rebuilt_hits.docname
+WHERE incremental_hits.docname IS NULL
+   OR rebuilt_hits.docname IS NULL
+   OR incremental_hits.score IS DISTINCT FROM rebuilt_hits.score
+   OR incremental_hits.rank IS DISTINCT FROM rebuilt_hits.rank
+
+query I
+EXECUTE rebuild_compare('vector database', 'phrase')
+----
+0
+
+query I
+EXECUTE rebuild_compare('vector datan', 'phrase_prefix')
+----
+0
+
+statement ok
+DELETE FROM phrase_docs WHERE id = 'p13'
+
+query I
+EXECUTE phrase_docnames('vector database vector', NULL, 32, 0.15, 50000, true, true, true, true, 1.2, 0.75, 'phrase')
+----
+p1
+
+statement ok
+DELETE FROM phrase_docs WHERE id = 'p14'
+
+query I
+EXECUTE phrase_docnames('vector datan', NULL, 32, 0.15, 50000, true, true, true, true, 1.2, 0.75, 'phrase_prefix')
+----
+
+# Non-layered indexes retain their existing terms schema.
+statement ok
+CREATE TABLE plain_phrase_docs(id VARCHAR, body VARCHAR)
+
+statement ok
+INSERT INTO plain_phrase_docs VALUES ('plain', 'alpha beta')
+
+statement ok
+PRAGMA create_fts_index(
+    'plain_phrase_docs',
+    'id',
+    'body',
+    stemmer='none',
+    stopwords='none'
+)
+
+query I
+SELECT count(*)
+FROM duckdb_columns()
+WHERE schema_name = 'fts_main_plain_phrase_docs'
+  AND table_name = 'terms'
+  AND column_name = 'position'
+----
+0
+
+query I
+SELECT positions
+FROM fts_main_plain_phrase_docs.index_metadata
+----
+false

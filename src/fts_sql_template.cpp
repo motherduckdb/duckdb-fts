@@ -38,6 +38,10 @@ SQLTemplateArgument SQLTemplateArgument::Integer(int64_t value) {
   return SQLTemplateArgument(std::to_string(value));
 }
 
+SQLTemplateArgument SQLTemplateArgument::Boolean(bool value) {
+  return SQLTemplateArgument(value ? "true" : "false");
+}
+
 SQLTemplateArgument SQLTemplateArgument::TrustedSQL(const string &value) {
   return SQLTemplateArgument(value);
 }

@@ -10,9 +10,37 @@
 
 namespace duckdb {
 
+static constexpr int64_t FTS_INDEX_FORMAT_VERSION = 2;
+
 static string SchemaSetupScript(const QualifiedName &qname) {
   return RenderSQLTemplate(fts_sql::SCHEMA_SETUP,
                            {{"fts_schema", GetFTSSchemaArgument(qname)}});
+}
+
+static string StopwordsConfig(const FTSIndexConfig &config) {
+  if (config.stopwords_mode == FTSStopwordsMode::NONE) {
+    return "none";
+  }
+  if (config.stopwords_mode == FTSStopwordsMode::ENGLISH) {
+    return "english";
+  }
+  return "table:" + GetQualifiedTableName(config.stopwords_table);
+}
+
+static void AppendAnalyzerConfigValue(string &result, const string &name,
+                                      const string &value) {
+  result += name + ":" + std::to_string(value.size()) + ":" + value + ";";
+}
+
+static string AnalyzerConfigBase(const FTSIndexConfig &config) {
+  string result;
+  AppendAnalyzerConfigValue(result, "stemmer", config.stemmer);
+  AppendAnalyzerConfigValue(result, "tokenizer", config.tokenizer);
+  AppendAnalyzerConfigValue(result, "ignore", config.ignore);
+  AppendAnalyzerConfigValue(result, "strip_accents",
+                            config.strip_accents ? "true" : "false");
+  AppendAnalyzerConfigValue(result, "lower", config.lower ? "true" : "false");
+  return result;
 }
 
 static string StopwordsScript(const FTSIndexConfig &config) {
@@ -79,7 +107,8 @@ static string IndexTablesScript(
     field_values.push_back(StringUtil::Format(
         "(%i, %s)", i, SQLString::ToString(input_values[i])));
     tokenize_fields.push_back(RenderSQLTemplate(
-        fts_sql::TOKENIZE_FIELD,
+        layered_search ? fts_sql::TOKENIZE_POSITIONAL_FIELD
+                       : fts_sql::TOKENIZE_FIELD,
         {{"fts_schema", GetFTSSchemaArgument(qname)},
          {"input_value", SQLTemplateArgument::Identifier(input_values[i])},
          {"field_id", SQLTemplateArgument::Integer(static_cast<int64_t>(i))},
@@ -134,6 +163,12 @@ static string IndexTablesScript(
        {"stopwords_filter", SQLTemplateArgument::TrustedSQL(stopwords_filter)},
        {"raw_term_output",
         SQLTemplateArgument::TrustedSQL(layered_search ? "ss.raw_term," : "")},
+       {"build_position_select",
+        SQLTemplateArgument::TrustedSQL(
+            layered_search ? ",\n           t.position AS position" : "")},
+       {"build_position_output",
+        SQLTemplateArgument::TrustedSQL(layered_search ? ",\n       ss.position"
+                                                       : "")},
        {"field_length_aggregates",
         SQLTemplateArgument::TrustedSQL(
             FieldLengthAggregateList(input_values.size()))},
@@ -146,6 +181,11 @@ static string IndexTablesScript(
        {"rawtermid_select",
         SQLTemplateArgument::TrustedSQL(
             layered_search ? "build_raw_dict.rawtermid," : "")},
+       {"position_select",
+        SQLTemplateArgument::TrustedSQL(
+            layered_search
+                ? ",\n       build_terms.position::UINTEGER AS position"
+                : "")},
        {"raw_dict_join", SQLTemplateArgument::TrustedSQL(raw_dict_join)},
        {"terms_order_by", SQLTemplateArgument::TrustedSQL(terms_order_by)},
        {"raw_dict_table", SQLTemplateArgument::TrustedSQL(raw_dict_table)},
@@ -155,6 +195,28 @@ static string IndexTablesScript(
        {"total_field_lengths",
         SQLTemplateArgument::TrustedSQL(StatsFieldAggregateList(
             input_values.size(), "sum", "0", "HUGEINT"))}});
+}
+
+static string IndexMetadataScript(const FTSIndexConfig &config) {
+  auto analyzer_config = AnalyzerConfigBase(config);
+  return RenderSQLTemplate(
+      fts_sql::INDEX_METADATA,
+      {{"fts_schema", GetFTSSchemaArgument(config.input_table)},
+       {"format_version",
+        SQLTemplateArgument::Integer(FTS_INDEX_FORMAT_VERSION)},
+       {"incremental", SQLTemplateArgument::Boolean(config.incremental)},
+       {"cluster_terms", SQLTemplateArgument::Boolean(config.cluster_terms)},
+       {"layered_search", SQLTemplateArgument::Boolean(config.layered_search)},
+       {"positions", SQLTemplateArgument::Boolean(config.layered_search)},
+       {"stemmer", SQLTemplateArgument::StringLiteral(config.stemmer)},
+       {"stopwords",
+        SQLTemplateArgument::StringLiteral(StopwordsConfig(config))},
+       {"tokenizer", SQLTemplateArgument::StringLiteral(config.tokenizer)},
+       {"ignore", SQLTemplateArgument::StringLiteral(config.ignore)},
+       {"strip_accents", SQLTemplateArgument::Boolean(config.strip_accents)},
+       {"lower", SQLTemplateArgument::Boolean(config.lower)},
+       {"analyzer_config",
+        SQLTemplateArgument::StringLiteral(analyzer_config)}});
 }
 
 static string LayeredSidecarScript(const QualifiedName &qname) {
@@ -279,6 +341,7 @@ string FTSIndexBuilder::Create(const FTSIndexConfig &config,
       config.stopwords_mode, GetFTSBuildTermsTable(qname),
       GetFTSBuildDictTable(qname), GetFTSBuildRawDictTable(qname),
       config.cluster_terms, config.layered_search);
+  result += IndexMetadataScript(config);
   result += MatchMacroScript(qname, config.stemmer);
   if (config.layered_search) {
     result += LayeredSidecarScript(qname);

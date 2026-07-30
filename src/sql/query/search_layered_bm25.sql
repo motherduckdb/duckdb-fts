@@ -11,7 +11,9 @@ WITH params(term_limit, max_df_ratio, max_df, enable_prefix, enable_substring, e
            CASE lower(query_mode::VARCHAR)
                WHEN 'standard' THEN 'standard'
                WHEN 'autocomplete' THEN 'autocomplete'
-               ELSE error('query_mode must be either standard or autocomplete')
+               WHEN 'phrase' THEN 'phrase'
+               WHEN 'phrase_prefix' THEN 'phrase_prefix'
+               ELSE error('query_mode must be one of standard, autocomplete, phrase, or phrase_prefix')
            END,
            field_weights::MAP(VARCHAR, DOUBLE),
            field_b::MAP(VARCHAR, DOUBLE),
@@ -20,47 +22,89 @@ WITH params(term_limit, max_df_ratio, max_df, enable_prefix, enable_substring, e
            b::DOUBLE
 ),
 {{field_scoring_config_ctes}}
+search_validation_errors AS (
+    SELECT message
+    FROM (
+        SELECT 10 AS priority,
+               'query_mode must be one of standard, autocomplete, phrase, or phrase_prefix' AS message
+        WHERE query_mode IS NULL
+           OR lower(query_mode::VARCHAR) NOT IN (
+               'standard',
+               'autocomplete',
+               'phrase',
+               'phrase_prefix'
+           )
+        UNION ALL
+        SELECT 20 AS priority,
+               message
+        FROM validation_errors
+    ) AS raw_search_validation_errors
+    ORDER BY priority,
+             message
+    LIMIT 1
+),
 df_cap(max_df) AS (
     SELECT least(params.max_df, ceil(stats.num_docs * params.max_df_ratio)::BIGINT)
     FROM {{fts_schema}}.stats AS stats
     CROSS JOIN params
 ),
-tokenized_query AS (
+positioned_query_tokens AS (
     SELECT unnest(tokens) AS raw_token,
-           generate_subscripts(tokens, 1) AS token_position
+           generate_subscripts(tokens, 1)::BIGINT AS token_position,
+           generate_subscripts(tokens, 1) = len(tokens) AS is_final_token
     FROM (
-        SELECT {{fts_schema}}.tokenize(query_string) AS tokens
+        SELECT list_filter(
+                   {{fts_schema}}.tokenize(query_string),
+                   lambda token: token IS NOT NULL AND token <> ''
+               ) AS tokens
     ) AS query_token_list
 ),
-raw_tokens AS (
+analyzed_query_tokens AS (
     SELECT raw_token,
-           token_position,
-           max(token_position) OVER () AS final_position
-    FROM tokenized_query
-    WHERE raw_token IS NOT NULL
-      AND raw_token <> ''
-      AND raw_token NOT IN (SELECT sw FROM {{fts_schema}}.stopwords)
+           token_position
+    FROM positioned_query_tokens
+    CROSS JOIN params
+    WHERE raw_token NOT IN (SELECT sw FROM {{fts_schema}}.stopwords)
+       OR (
+           params.query_mode = 'phrase_prefix'
+           AND is_final_token
+       )
+),
+query_shape AS (
+    SELECT count(*)::BIGINT AS token_count,
+           max(token_position) AS final_position,
+           CASE
+               WHEN params.query_mode = 'phrase' AND count(*) = 1
+                   THEN 'standard'
+               WHEN params.query_mode = 'phrase_prefix' AND count(*) = 1
+                   THEN 'autocomplete'
+               ELSE params.query_mode
+           END AS effective_mode
+    FROM analyzed_query_tokens
+    CROSS JOIN params
+    GROUP BY params.query_mode
 ),
 autocomplete_final_token AS (
     SELECT raw_token AS query_term,
            length(raw_token)::BIGINT AS query_len,
            least(length(raw_token), 3)::UTINYINT AS prefix_len,
            substr(raw_token, 1, least(length(raw_token), 3)) AS prefix
-    FROM raw_tokens
-    CROSS JOIN params
-    WHERE params.query_mode = 'autocomplete'
-      AND token_position = final_position
+    FROM analyzed_query_tokens
+    CROSS JOIN query_shape
+    WHERE query_shape.effective_mode = 'autocomplete'
+      AND token_position = query_shape.final_position
       AND length(raw_token) >= 2
 ),
 stemmed_tokens AS (
     SELECT DISTINCT query_term
     FROM (
         SELECT stem(raw_token, {{stemmer}}) AS query_term
-        FROM raw_tokens
-        CROSS JOIN params
-        WHERE params.query_mode = 'standard'
+        FROM analyzed_query_tokens
+        CROSS JOIN query_shape
+        WHERE query_shape.effective_mode = 'standard'
            OR (
-               token_position < final_position
+               query_shape.effective_mode = 'autocomplete'
+               AND token_position < query_shape.final_position
                AND EXISTS (SELECT 1 FROM autocomplete_final_token)
            )
     ) AS stemmed_query
@@ -91,8 +135,9 @@ expansion_tokens AS (
     FROM query_tokens
     LEFT JOIN exact_terms
       ON exact_terms.query_term = query_tokens.query_term
+    CROSS JOIN query_shape
     CROSS JOIN params
-    WHERE params.query_mode = 'standard'
+    WHERE query_shape.effective_mode = 'standard'
       AND (
           params.expand_exact_terms
           OR exact_terms.termid IS NULL
@@ -313,6 +358,164 @@ autocomplete_prefix_terms AS (
     FROM autocomplete_candidates
     WHERE term <> query_term
 ),
+phrase_tokens AS (
+    SELECT raw_token,
+           stem(raw_token, {{stemmer}}) AS term,
+           token_position,
+           token_position - 1 AS relative_position,
+           token_position AS phrase_slot
+    FROM analyzed_query_tokens
+    CROSS JOIN query_shape
+    WHERE query_shape.effective_mode IN ('phrase', 'phrase_prefix')
+),
+phrase_exact_slots AS (
+    SELECT phrase_tokens.phrase_slot,
+           phrase_tokens.relative_position,
+           term_stats.termid,
+           term_stats.df
+    FROM phrase_tokens
+    JOIN {{fts_schema}}.term_stats AS term_stats
+      ON term_stats.term = phrase_tokens.term
+    CROSS JOIN query_shape
+    WHERE query_shape.effective_mode = 'phrase'
+       OR phrase_tokens.token_position < query_shape.final_position
+),
+phrase_prefix_input AS (
+    SELECT phrase_tokens.raw_token AS query_term,
+           least(length(phrase_tokens.raw_token), 3)::UTINYINT AS prefix_len,
+           substr(
+               phrase_tokens.raw_token,
+               1,
+               least(length(phrase_tokens.raw_token), 3)
+           ) AS prefix,
+           phrase_tokens.relative_position
+    FROM phrase_tokens
+    CROSS JOIN query_shape
+    WHERE query_shape.effective_mode = 'phrase_prefix'
+      AND phrase_tokens.token_position = query_shape.final_position
+      AND length(phrase_tokens.raw_token) >= 2
+),
+phrase_prefix_candidates AS (
+    SELECT raw_dict.termid,
+           raw_dict.rawtermid,
+           prefix_input.relative_position,
+           row_number() OVER (
+               ORDER BY (raw_dict.raw_term = prefix_input.query_term) DESC,
+                        raw_dict.df ASC,
+                        length(raw_dict.raw_term) ASC,
+                        raw_dict.raw_term ASC,
+                        raw_dict.rawtermid ASC
+           ) AS expansion_rank
+    FROM phrase_prefix_input AS prefix_input
+    JOIN {{fts_schema}}.term_prefixes AS term_prefixes
+      ON term_prefixes.prefix_len = prefix_input.prefix_len
+     AND term_prefixes.prefix = prefix_input.prefix
+    JOIN {{fts_schema}}.raw_dict AS raw_dict
+      ON raw_dict.rawtermid = term_prefixes.rawtermid
+    WHERE starts_with(raw_dict.raw_term, prefix_input.query_term)
+),
+selected_phrase_prefixes AS (
+    SELECT termid,
+           rawtermid,
+           relative_position
+    FROM phrase_prefix_candidates
+    CROSS JOIN params
+    WHERE expansion_rank <= params.term_limit
+),
+phrase_anchor AS (
+    SELECT phrase_slot,
+           relative_position,
+           termid
+    FROM phrase_exact_slots
+    ORDER BY df ASC,
+             phrase_slot ASC,
+             termid ASC
+    LIMIT 1
+),
+phrase_candidate_starts AS (
+    SELECT terms.docid,
+           terms.fieldid,
+           terms.position::BIGINT - phrase_anchor.relative_position AS phrase_start
+    FROM phrase_anchor
+    JOIN {{fts_schema}}.terms AS terms
+      ON terms.termid = phrase_anchor.termid
+    WHERE terms.fieldid IN (SELECT fieldid FROM field_config)
+),
+phrase_exact_matches AS (
+    SELECT candidates.docid,
+           candidates.fieldid,
+           candidates.phrase_start
+    FROM phrase_candidate_starts AS candidates
+    JOIN phrase_exact_slots AS slots ON true
+    JOIN {{fts_schema}}.terms AS terms
+      ON terms.docid = candidates.docid
+     AND terms.fieldid = candidates.fieldid
+     AND terms.termid = slots.termid
+     AND terms.position::BIGINT = candidates.phrase_start + slots.relative_position
+    CROSS JOIN query_shape
+    GROUP BY candidates.docid,
+             candidates.fieldid,
+             candidates.phrase_start,
+             query_shape.effective_mode,
+             query_shape.token_count
+    HAVING count(DISTINCT slots.phrase_slot) = CASE
+        WHEN query_shape.effective_mode = 'phrase_prefix'
+            THEN query_shape.token_count - 1
+        ELSE query_shape.token_count
+    END
+),
+phrase_prefix_postings AS (
+    SELECT terms.docid,
+           terms.fieldid,
+           terms.position,
+           prefixes.relative_position
+    FROM selected_phrase_prefixes AS prefixes
+    JOIN {{fts_schema}}.terms AS terms
+      ON terms.termid = prefixes.termid
+     AND terms.rawtermid = prefixes.rawtermid
+    WHERE terms.fieldid IN (SELECT fieldid FROM field_config)
+),
+phrase_matches AS (
+    SELECT phrase_exact_matches.*
+    FROM phrase_exact_matches
+    CROSS JOIN query_shape
+    WHERE lower(query_mode::VARCHAR) = 'phrase'
+      AND query_shape.effective_mode = 'phrase'
+    UNION ALL
+    SELECT DISTINCT exact_matches.docid,
+                    exact_matches.fieldid,
+                    exact_matches.phrase_start
+    FROM phrase_exact_matches AS exact_matches
+    JOIN phrase_prefix_postings AS prefix_postings
+      ON prefix_postings.docid = exact_matches.docid
+     AND prefix_postings.fieldid = exact_matches.fieldid
+     AND prefix_postings.position::BIGINT
+         = exact_matches.phrase_start + prefix_postings.relative_position
+    CROSS JOIN query_shape
+    WHERE lower(query_mode::VARCHAR) = 'phrase_prefix'
+      AND query_shape.effective_mode = 'phrase_prefix'
+),
+phrase_idf AS (
+    SELECT sum(
+               log(((((stats.num_docs - slots.df) + 0.5) / (slots.df + 0.5)) + 1))
+           ) AS phrase_idf
+    FROM phrase_exact_slots AS slots
+    CROSS JOIN {{fts_schema}}.stats AS stats
+),
+phrase_field_term_tf AS (
+    SELECT NULL::BIGINT AS termid,
+           NULL::BIGINT AS rawtermid,
+           phrase_matches.docid,
+           phrase_matches.fieldid,
+           any_value(phrase_idf.phrase_idf) AS idf,
+           1.0::DOUBLE AS expansion_weight,
+           count(*)::DOUBLE AS tf
+    FROM phrase_matches
+    CROSS JOIN phrase_idf
+    WHERE phrase_idf.phrase_idf IS NOT NULL
+    GROUP BY phrase_matches.docid,
+             phrase_matches.fieldid
+),
 selected_terms AS (
     SELECT query_term,
            termid,
@@ -354,12 +557,17 @@ selected_terms AS (
              termid,
              rawtermid
 ),
-field_term_tf AS (
+standard_field_term_tf AS (
     SELECT selected_terms.termid,
            selected_terms.rawtermid,
            terms.docid,
            terms.fieldid,
-           selected_terms.df,
+           any_value(
+               log(
+                   ((((stats.num_docs - selected_terms.df) + 0.5)
+                       / (selected_terms.df + 0.5)) + 1)
+               )
+           ) AS idf,
            max(selected_terms.expansion_weight) AS expansion_weight,
            count(*) AS tf
     FROM selected_terms
@@ -369,12 +577,19 @@ field_term_tf AS (
          selected_terms.rawtermid IS NULL
          OR terms.rawtermid = selected_terms.rawtermid
      )
+    CROSS JOIN {{fts_schema}}.stats AS stats
     WHERE terms.fieldid IN (SELECT fieldid FROM field_config)
     GROUP BY selected_terms.termid,
              selected_terms.rawtermid,
              terms.docid,
-             terms.fieldid,
-             selected_terms.df
+             terms.fieldid
+),
+field_term_tf AS (
+    SELECT *
+    FROM standard_field_term_tf
+    UNION ALL
+    SELECT *
+    FROM phrase_field_term_tf
 ),
 {{field_scoring_score_ctes}},
 ranked AS (
@@ -398,5 +613,5 @@ UNION ALL
 SELECT error(message)::VARCHAR AS docname,
        NULL::DOUBLE AS score,
        NULL::BIGINT AS rank
-FROM validation_errors
+FROM search_validation_errors
 ORDER BY rank;

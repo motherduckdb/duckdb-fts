@@ -55,7 +55,7 @@ FOR EACH STATEMENT
     SELECT ss.docid,
            ss.fieldid,
            d.termid
-           {{rawtermid_select}}
+           {{layered_term_select}}
     FROM stemmed_stopped AS ss
     JOIN {{fts_schema}}.dict AS d ON ss.term = d.term
     {{raw_dict_join}}
