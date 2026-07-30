@@ -116,7 +116,10 @@ statement ok
 CREATE TABLE empty_stem_docs(id VARCHAR, body VARCHAR)
 
 statement ok
-INSERT INTO empty_stem_docs VALUES ('john', 'John''s guide'), ('other', 'other')
+INSERT INTO empty_stem_docs VALUES
+    ('john', 'John''s guide'),
+    ('other', 'other'),
+    ('empty', 's')
 
 statement ok
 PRAGMA create_fts_index(
@@ -169,6 +172,19 @@ SELECT count(*) FILTER (
            )
        ) AS layered_matches
 FROM empty_stem_docs
+----
+0	0
+
+query II
+SELECT (
+           SELECT count(*)
+           FROM fts_main_empty_stem_docs.analyze_text('s')
+       ) AS analyzed_terms,
+       (
+           SELECT len
+           FROM fts_main_empty_stem_docs.docs
+           WHERE name = 'empty'
+       ) AS indexed_terms
 ----
 0	0
 
