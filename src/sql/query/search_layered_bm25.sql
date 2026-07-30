@@ -50,7 +50,8 @@ df_cap(max_df) AS (
 ),
 positioned_query_tokens AS (
     SELECT unnest(tokens) AS raw_token,
-           generate_subscripts(tokens, 1)::BIGINT AS token_position
+           generate_subscripts(tokens, 1)::BIGINT AS token_position,
+           generate_subscripts(tokens, 1) = len(tokens) AS is_final_token
     FROM (
         SELECT list_filter(
                    {{fts_schema}}.tokenize(query_string),
@@ -66,10 +67,7 @@ analyzed_query_tokens AS (
     WHERE raw_token NOT IN (SELECT sw FROM {{fts_schema}}.stopwords)
        OR (
            params.query_mode = 'phrase_prefix'
-           AND token_position = (
-               SELECT max(token_position)
-               FROM positioned_query_tokens
-           )
+           AND is_final_token
        )
 ),
 query_shape AS (
@@ -364,10 +362,7 @@ phrase_tokens AS (
     SELECT raw_token,
            stem(raw_token, {{stemmer}}) AS term,
            token_position,
-           token_position - (
-               SELECT min(token_position)
-               FROM analyzed_query_tokens
-           ) AS relative_position,
+           token_position - 1 AS relative_position,
            token_position AS phrase_slot
     FROM analyzed_query_tokens
     CROSS JOIN query_shape

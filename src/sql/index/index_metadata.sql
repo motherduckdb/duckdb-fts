@@ -1,4 +1,32 @@
 CREATE VIEW {{fts_schema}}.index_metadata AS
+WITH canonical_stopwords AS (
+    SELECT DISTINCT sw
+    FROM {{fts_schema}}.stopwords
+),
+stopword_config AS (
+    SELECT md5(
+               coalesce(
+                   string_agg(
+                       CASE
+                           WHEN sw IS NULL THEN 'n;'
+                           ELSE 's:' || length(sw)::VARCHAR || ':' || sw || ';'
+                       END,
+                       '' ORDER BY sw NULLS FIRST
+                   ),
+                   ''
+               )
+           ) AS content_hash
+    FROM canonical_stopwords
+),
+analyzer_metadata AS (
+    SELECT {{analyzer_config}}
+           || 'stopwords:'
+           || length(content_hash)::VARCHAR
+           || ':'
+           || content_hash
+           || ';' AS analyzer_config
+    FROM stopword_config
+)
 SELECT {{format_version}}::UINTEGER AS format_version,
        {{incremental}}::BOOLEAN AS incremental,
        {{cluster_terms}}::BOOLEAN AS cluster_terms,
@@ -11,5 +39,6 @@ SELECT {{format_version}}::UINTEGER AS format_version,
        {{ignore}}::VARCHAR AS ignore,
        {{strip_accents}}::BOOLEAN AS strip_accents,
        {{lower}}::BOOLEAN AS lower,
-       {{analyzer_config}}::VARCHAR AS analyzer_config,
-       md5({{analyzer_config}})::VARCHAR AS analyzer_fingerprint;
+       analyzer_config,
+       md5(analyzer_config)::VARCHAR AS analyzer_fingerprint
+FROM analyzer_metadata;

@@ -32,10 +32,9 @@ static void AppendAnalyzerConfigValue(string &result, const string &name,
   result += name + ":" + std::to_string(value.size()) + ":" + value + ";";
 }
 
-static string AnalyzerConfig(const FTSIndexConfig &config) {
+static string AnalyzerConfigBase(const FTSIndexConfig &config) {
   string result;
   AppendAnalyzerConfigValue(result, "stemmer", config.stemmer);
-  AppendAnalyzerConfigValue(result, "stopwords", StopwordsConfig(config));
   AppendAnalyzerConfigValue(result, "tokenizer", config.tokenizer);
   AppendAnalyzerConfigValue(result, "ignore", config.ignore);
   AppendAnalyzerConfigValue(result, "strip_accents",
@@ -199,7 +198,7 @@ static string IndexTablesScript(
 }
 
 static string IndexMetadataScript(const FTSIndexConfig &config) {
-  auto analyzer_config = AnalyzerConfig(config);
+  auto analyzer_config = AnalyzerConfigBase(config);
   return RenderSQLTemplate(
       fts_sql::INDEX_METADATA,
       {{"fts_schema", GetFTSSchemaArgument(config.input_table)},
