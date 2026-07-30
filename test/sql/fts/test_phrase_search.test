@@ -533,12 +533,13 @@ WHERE docname = 'c'
 ----
 true
 
-# Incremental positions and phrase results match a clean rebuild.
+# Incremental positions compact ignored delimiters, tolerate NULL fields, and
+# match a clean rebuild.
 statement ok
-INSERT INTO phrase_docs VALUES ('p13', 'vector database vector', '')
+INSERT INTO phrase_docs VALUES ('p13', '...vector,,, database vector!!!', NULL)
 
 statement ok
-INSERT INTO phrase_docs VALUES ('p14', 'vector datanova', '')
+INSERT INTO phrase_docs VALUES ('p14', 'vector 123 datanova!!!', '')
 
 query II
 SELECT dict.term, terms.position
