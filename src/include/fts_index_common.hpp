@@ -6,15 +6,27 @@
 
 namespace duckdb {
 
+struct FTSAnalyzerConfig {
+  string stemmer = "none";
+  bool filter_stopwords = false;
+};
+
+enum class AnalyzeTokenStreamProjection : uint8_t {
+  NONE,
+  POSITION,
+  DOCID_FIELDID,
+  DOCID_FIELDID_POSITION,
+  TOKEN_POSITION
+};
+
 string GetFTSSchemaName(const QualifiedName &qname);
 string GetFTSSchema(const QualifiedName &qname);
 SQLTemplateArgument GetFTSSchemaArgument(const QualifiedName &qname);
 string GetQualifiedTableName(const QualifiedName &qname);
 SQLTemplateArgument GetQualifiedTableArgument(const QualifiedName &qname);
 string RenderAnalyzeTokenStream(const QualifiedName &qname,
-                                const string &stemmer,
-                                const string &passthrough,
-                                bool filter_stopwords);
+                                const FTSAnalyzerConfig &config,
+                                AnalyzeTokenStreamProjection projection);
 
 vector<string> GetFTSInsertTriggerNames(const QualifiedName &qname);
 vector<string> GetFTSClusteredInsertTriggerNames(const QualifiedName &qname);

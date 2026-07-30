@@ -109,6 +109,69 @@ SELECT (SELECT count(*) FROM fts_main_analyzer_docs.analyze_text(NULL::VARCHAR))
 ----
 0	0
 
+# Stemmer output is part of the analyzer contract. Porter stems possessive
+# token "s" to an empty string, which must not enter the index or either query
+# path.
+statement ok
+CREATE TABLE empty_stem_docs(id VARCHAR, body VARCHAR)
+
+statement ok
+INSERT INTO empty_stem_docs VALUES ('john', 'John''s guide'), ('other', 'other')
+
+statement ok
+PRAGMA create_fts_index(
+    'empty_stem_docs',
+    'id',
+    'body',
+    stemmer='porter',
+    stopwords='none',
+    layered_search=true
+)
+
+query II
+SELECT (
+           SELECT count(*)
+           FROM fts_main_empty_stem_docs.analyze_text('Alice''s')
+           WHERE term = ''
+       ) AS empty_final_terms,
+       (
+           SELECT count(*)
+           FROM (
+               SELECT id AS docname
+               FROM empty_stem_docs
+               WHERE fts_main_empty_stem_docs.match_bm25(
+                   id,
+                   'Alice''s'
+               ) IS NOT NULL
+               EXCEPT
+               SELECT docname
+               FROM fts_main_empty_stem_docs.search_layered_bm25(
+                   'Alice''s',
+                   top_k := NULL
+               )
+           )
+       ) AS mismatched_results
+----
+0	0
+
+query II
+SELECT count(*) FILTER (
+           WHERE fts_main_empty_stem_docs.match_bm25(
+               id,
+               'Alice''s'
+           ) IS NOT NULL
+       ) AS base_matches,
+       (
+           SELECT count(*)
+           FROM fts_main_empty_stem_docs.search_layered_bm25(
+               'Alice''s',
+               top_k := NULL
+           )
+       ) AS layered_matches
+FROM empty_stem_docs
+----
+0	0
+
 # The canonical stream and physical positional postings contain the same
 # occurrence rows for every indexed field.
 query I

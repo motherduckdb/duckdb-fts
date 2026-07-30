@@ -91,15 +91,13 @@ static string TokenizeMacroScript(const QualifiedName &qname,
 }
 
 static string AnalyzeTextMacroScript(const QualifiedName &qname,
-                                     const string &stemmer,
-                                     bool filter_stopwords) {
+                                     const FTSAnalyzerConfig &config) {
   return RenderSQLTemplate(
       fts_sql::ANALYZE_TEXT_MACRO,
       {{"fts_schema", GetFTSSchemaArgument(qname)},
        {"analyzed_tokens",
         SQLTemplateArgument::TrustedSQL(RenderAnalyzeTokenStream(
-            qname, stemmer, ",\n       tokenized.position",
-            filter_stopwords))}});
+            qname, config, AnalyzeTokenStreamProjection::POSITION))}});
 }
 
 static string IndexTablesScript(const QualifiedName &qname,
@@ -108,7 +106,7 @@ static string IndexTablesScript(const QualifiedName &qname,
                                 const string &build_terms_table,
                                 const string &build_dict_table,
                                 const string &build_raw_dict_table,
-                                const string &stemmer, bool filter_stopwords,
+                                const FTSAnalyzerConfig &analyzer_config,
                                 bool cluster_terms, bool layered_search) {
   vector<string> field_values;
   vector<string> tokenize_fields;
@@ -168,12 +166,10 @@ static string IndexTablesScript(const QualifiedName &qname,
                                   tokenize_fields, " UNION ALL "))},
        {"analyzed_tokens",
         SQLTemplateArgument::TrustedSQL(RenderAnalyzeTokenStream(
-            qname, stemmer,
-            layered_search ? ",\n       tokenized.docid,\n       "
-                             "tokenized.fieldid,\n       tokenized.position"
-                           : ",\n       tokenized.docid,\n       "
-                             "tokenized.fieldid",
-            filter_stopwords))},
+            qname, analyzer_config,
+            layered_search
+                ? AnalyzeTokenStreamProjection::DOCID_FIELDID_POSITION
+                : AnalyzeTokenStreamProjection::DOCID_FIELDID))},
        {"raw_term_output",
         SQLTemplateArgument::TrustedSQL(
             layered_search ? "stemmed_stopped.raw_term," : "")},
@@ -277,13 +273,13 @@ static string FieldScoringScoreCTEs(const QualifiedName &qname) {
 }
 
 static string MatchMacroScript(const QualifiedName &qname,
-                               const string &stemmer, bool filter_stopwords) {
+                               const FTSAnalyzerConfig &config) {
   return RenderSQLTemplate(
       fts_sql::MATCH_BM25,
       {{"fts_schema", GetFTSSchemaArgument(qname)},
        {"analyzed_tokens",
-        SQLTemplateArgument::TrustedSQL(
-            RenderAnalyzeTokenStream(qname, stemmer, "", filter_stopwords))},
+        SQLTemplateArgument::TrustedSQL(RenderAnalyzeTokenStream(
+            qname, config, AnalyzeTokenStreamProjection::NONE))},
        {"field_scoring_config_ctes",
         SQLTemplateArgument::TrustedSQL(FieldScoringConfigCTEs(qname))},
        {"field_scoring_score_ctes",
@@ -291,37 +287,36 @@ static string MatchMacroScript(const QualifiedName &qname,
 }
 
 static string LayeredSearchTableMacroScript(const QualifiedName &qname,
-                                            const string &stemmer,
-                                            bool filter_stopwords) {
+                                            const FTSAnalyzerConfig &config) {
   auto is_final_token =
-      filter_stopwords
+      config.filter_stopwords
           ? ",\n           generate_subscripts(tokens, 1) = len(tokens) "
             "AS is_final_token"
           : "";
   auto phrase_prefix_stopword_token =
-      filter_stopwords ? "UNION ALL\n"
-                         "    SELECT tokenized.raw_term AS raw_token,\n"
-                         "           NULL::VARCHAR AS term,\n"
-                         "           tokenized.token_position\n"
-                         "    FROM tokenized\n"
-                         "    CROSS JOIN params\n"
-                         "    WHERE params.query_mode = 'phrase_prefix'\n"
-                         "      AND tokenized.is_final_token\n"
-                         "      AND tokenized.raw_term IN (\n"
-                         "          SELECT sw\n"
-                         "          FROM " +
-                             GetFTSSchema(qname) +
-                             ".stopwords\n"
-                             "      )"
-                       : "";
+      config.filter_stopwords
+          ? "UNION ALL\n"
+            "    SELECT tokenized.raw_term AS raw_token,\n"
+            "           NULL::VARCHAR AS term,\n"
+            "           tokenized.token_position\n"
+            "    FROM tokenized\n"
+            "    CROSS JOIN params\n"
+            "    WHERE params.query_mode = 'phrase_prefix'\n"
+            "      AND tokenized.is_final_token\n"
+            "      AND tokenized.raw_term IN (\n"
+            "          SELECT sw\n"
+            "          FROM " +
+                GetFTSSchema(qname) +
+                ".stopwords\n"
+                "      )"
+          : "";
   return RenderSQLTemplate(
       fts_sql::SEARCH_LAYERED_BM25,
       {{"fts_schema", GetFTSSchemaArgument(qname)},
        {"is_final_token", SQLTemplateArgument::TrustedSQL(is_final_token)},
        {"analyzed_tokens",
         SQLTemplateArgument::TrustedSQL(RenderAnalyzeTokenStream(
-            qname, stemmer, ",\n       tokenized.token_position",
-            filter_stopwords))},
+            qname, config, AnalyzeTokenStreamProjection::TOKEN_POSITION))},
        {"phrase_prefix_stopword_token",
         SQLTemplateArgument::TrustedSQL(phrase_prefix_stopword_token)},
        {"field_scoring_config_ctes",
@@ -357,12 +352,10 @@ static string StructuredLayeredSearchMacroScript(const QualifiedName &qname) {
 }
 
 static string LayeredSearchMacroScript(const QualifiedName &qname,
-                                       const string &stemmer,
-                                       bool filter_stopwords,
+                                       const FTSAnalyzerConfig &analyzer_config,
                                        bool include_structured_queries) {
-  auto result =
-      LayeredSearchTableMacroScript(qname, stemmer, filter_stopwords) +
-      LayeredMatchMacroScript(qname);
+  auto result = LayeredSearchTableMacroScript(qname, analyzer_config) +
+                LayeredMatchMacroScript(qname);
   if (include_structured_queries) {
     result += StructuredLayeredSearchMacroScript(qname);
   }
@@ -372,6 +365,10 @@ static string LayeredSearchMacroScript(const QualifiedName &qname,
 string FTSIndexBuilder::Create(const FTSIndexConfig &config,
                                bool drop_existing_triggers) {
   auto &qname = config.input_table;
+  FTSAnalyzerConfig analyzer_config;
+  analyzer_config.stemmer = config.stemmer;
+  analyzer_config.filter_stopwords =
+      config.stopwords_mode != FTSStopwordsMode::NONE;
   string result;
   if (drop_existing_triggers) {
     result += FTSIndexMaintenance::DropTriggers(qname);
@@ -380,24 +377,25 @@ string FTSIndexBuilder::Create(const FTSIndexConfig &config,
   result += StopwordsScript(config);
   result += TokenizeMacroScript(qname, config.tokenizer, config.ignore,
                                 config.strip_accents, config.lower);
-  auto filter_stopwords = config.stopwords_mode != FTSStopwordsMode::NONE;
-  result += AnalyzeTextMacroScript(qname, config.stemmer, filter_stopwords);
+  result += AnalyzeTextMacroScript(qname, analyzer_config);
   result += IndexTablesScript(
       qname, config.input_id, config.input_values, GetFTSBuildTermsTable(qname),
       GetFTSBuildDictTable(qname), GetFTSBuildRawDictTable(qname),
-      config.stemmer, filter_stopwords, config.cluster_terms,
-      config.layered_search);
+      analyzer_config, config.cluster_terms, config.layered_search);
   result += IndexMetadataScript(config);
-  result += MatchMacroScript(qname, config.stemmer, filter_stopwords);
+  result += MatchMacroScript(qname, analyzer_config);
   if (config.layered_search) {
     result += LayeredSidecarScript(qname);
-    result += LayeredSearchMacroScript(qname, config.stemmer, filter_stopwords,
+    result += LayeredSearchMacroScript(qname, analyzer_config,
                                        config.structured_queries);
   }
   if (config.incremental) {
+    FTSIndexMaintenanceConfig maintenance_config;
+    maintenance_config.analyzer = analyzer_config;
+    maintenance_config.cluster_terms = config.cluster_terms;
+    maintenance_config.layered_search = config.layered_search;
     result += FTSIndexMaintenance::Create(
-        qname, config.input_id, config.input_values, config.stemmer,
-        filter_stopwords, config.cluster_terms, config.layered_search);
+        qname, config.input_id, config.input_values, maintenance_config);
   }
   return result;
 }

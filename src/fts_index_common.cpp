@@ -2,6 +2,7 @@
 
 #include "fts_sql_assets.hpp"
 
+#include "duckdb/common/exception.hpp"
 #include "duckdb/common/sql_identifier.hpp"
 #include "duckdb/common/string_util.hpp"
 
@@ -44,15 +45,32 @@ SQLTemplateArgument GetQualifiedTableArgument(const QualifiedName &qname) {
   return SQLTemplateArgument::QualifiedIdentifier(parts);
 }
 
+static string
+AnalyzeTokenStreamProjectionSQL(AnalyzeTokenStreamProjection projection) {
+  switch (projection) {
+  case AnalyzeTokenStreamProjection::NONE:
+    return "";
+  case AnalyzeTokenStreamProjection::POSITION:
+    return ",\n       tokenized.position";
+  case AnalyzeTokenStreamProjection::DOCID_FIELDID:
+    return ",\n       tokenized.docid,\n       tokenized.fieldid";
+  case AnalyzeTokenStreamProjection::DOCID_FIELDID_POSITION:
+    return ",\n       tokenized.docid,\n       tokenized.fieldid,\n       "
+           "tokenized.position";
+  case AnalyzeTokenStreamProjection::TOKEN_POSITION:
+    return ",\n       tokenized.token_position";
+  }
+  throw InternalException("Unsupported analyzer token stream projection");
+}
+
 string RenderAnalyzeTokenStream(const QualifiedName &qname,
-                                const string &stemmer,
-                                const string &passthrough,
-                                bool filter_stopwords) {
-  auto term_expression =
-      stemmer == "none"
-          ? "tokenized.raw_term"
-          : "stem(tokenized.raw_term, " + SQLString::ToString(stemmer) + ")";
-  auto stopwords_filter = filter_stopwords
+                                const FTSAnalyzerConfig &config,
+                                AnalyzeTokenStreamProjection projection) {
+  auto term_expression = config.stemmer == "none"
+                             ? "tokenized.raw_term"
+                             : "stem(tokenized.raw_term, " +
+                                   SQLString::ToString(config.stemmer) + ")";
+  auto stopwords_filter = config.filter_stopwords
                               ? "  AND tokenized.raw_term NOT IN (\n"
                                 "      SELECT sw\n"
                                 "      FROM " +
@@ -63,7 +81,8 @@ string RenderAnalyzeTokenStream(const QualifiedName &qname,
   return RenderSQLTemplate(
       fts_sql::ANALYZE_TOKEN_STREAM,
       {{"term_expression", SQLTemplateArgument::TrustedSQL(term_expression)},
-       {"passthrough", SQLTemplateArgument::TrustedSQL(passthrough)},
+       {"projected_columns", SQLTemplateArgument::TrustedSQL(
+                                 AnalyzeTokenStreamProjectionSQL(projection))},
        {"stopwords_filter",
         SQLTemplateArgument::TrustedSQL(stopwords_filter)}});
 }
