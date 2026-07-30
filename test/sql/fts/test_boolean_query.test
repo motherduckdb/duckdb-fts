@@ -11,6 +11,9 @@ require json
 require no_alternative_verify
 
 statement ok
+SELECT json_valid('{}')
+
+statement ok
 CREATE TABLE boolean_docs(id VARCHAR NOT NULL, title VARCHAR, body VARCHAR)
 
 statement ok
