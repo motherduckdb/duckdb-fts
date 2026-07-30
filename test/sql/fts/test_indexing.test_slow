@@ -63,7 +63,11 @@ two
 three
 
 query III
-SELECT termid, docid, fieldid FROM fts_main_documents.terms
+SELECT termid, docid, fieldid
+FROM fts_main_documents.terms
+ORDER BY docid,
+         termid,
+         fieldid
 ----
 0	0	0
 0	0	0
@@ -95,7 +99,9 @@ SELECT termid, term, df FROM fts_main_documents.dict
 query T
 WITH ppterms AS (SELECT stem(unnest(string_split_regex(regexp_replace(lower(strip_accents('QUÁCKED BÁRKED')), '[^a-z]', ' ', 'g'), '\s+')), 'porter') AS term),
 qtermids AS (SELECT termid FROM fts_main_documents.dict AS dict, ppterms WHERE dict.term = ppterms.term)
-SELECT * FROM qtermids
+SELECT *
+FROM qtermids
+ORDER BY termid
 ----
 0
 1
@@ -104,7 +110,10 @@ query II
 WITH ppterms AS (SELECT stem(unnest(string_split_regex(regexp_replace(lower(strip_accents('QUÁCKED BÁRKED')), '[^a-z]', ' ', 'g'), '\s+')), 'porter') AS term),
 qtermids AS (SELECT termid FROM fts_main_documents.dict AS dict, ppterms WHERE dict.term = ppterms.term),
 qterms AS (SELECT termid, docid FROM fts_main_documents.terms AS terms WHERE termid IN (SELECT qtermids.termid FROM qtermids))
-SELECT * FROM qterms
+SELECT *
+FROM qterms
+ORDER BY termid,
+         docid
 ----
 0	0
 0	0

@@ -1,5 +1,7 @@
 #include "fts_index_common.hpp"
 
+#include "fts_sql_assets.hpp"
+
 #include "duckdb/common/sql_identifier.hpp"
 #include "duckdb/common/string_util.hpp"
 
@@ -40,6 +42,30 @@ SQLTemplateArgument GetQualifiedTableArgument(const QualifiedName &qname) {
   parts.push_back(qname.Schema().GetIdentifierName());
   parts.push_back(qname.Name().GetIdentifierName());
   return SQLTemplateArgument::QualifiedIdentifier(parts);
+}
+
+string RenderAnalyzeTokenStream(const QualifiedName &qname,
+                                const string &stemmer,
+                                const string &passthrough,
+                                bool filter_stopwords) {
+  auto term_expression =
+      stemmer == "none"
+          ? "tokenized.raw_term"
+          : "stem(tokenized.raw_term, " + SQLString::ToString(stemmer) + ")";
+  auto stopwords_filter = filter_stopwords
+                              ? "  AND tokenized.raw_term NOT IN (\n"
+                                "      SELECT sw\n"
+                                "      FROM " +
+                                    GetFTSSchema(qname) +
+                                    ".stopwords\n"
+                                    "  )"
+                              : "";
+  return RenderSQLTemplate(
+      fts_sql::ANALYZE_TOKEN_STREAM,
+      {{"term_expression", SQLTemplateArgument::TrustedSQL(term_expression)},
+       {"passthrough", SQLTemplateArgument::TrustedSQL(passthrough)},
+       {"stopwords_filter",
+        SQLTemplateArgument::TrustedSQL(stopwords_filter)}});
 }
 
 vector<string> GetFTSInsertTriggerNames(const QualifiedName &qname) {

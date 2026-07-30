@@ -10,8 +10,8 @@ public:
   static string DropTriggers(const QualifiedName &qname);
   static string Create(const QualifiedName &qname, const string &input_id,
                        const vector<string> &input_values,
-                       const string &stemmer, bool cluster_terms,
-                       bool layered_search);
+                       const string &stemmer, bool filter_stopwords,
+                       bool cluster_terms, bool layered_search);
 };
 
 } // namespace duckdb

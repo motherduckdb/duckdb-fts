@@ -14,7 +14,7 @@ LOAD fts;
 
 ## Usage
 
-The extension adds two `PRAGMA` statements to DuckDB: one to create, and one to drop an index. Additionally, a scalar macro `stem` is added, which is used internally by the extension.
+The extension adds two `PRAGMA` statements to DuckDB: one to create, and one to drop an index. Additionally, a scalar macro `stem` is added, which is used internally by the extension. Each index schema also contains search macros and an `analyze_text` table macro configured for that index.
 
 ### `PRAGMA create_fts_index`
 
@@ -77,6 +77,35 @@ with `overwrite = true` performs the same cleanup before building the new index.
 | Name | Type | Description |
 |:--|:--|:-----------|
 | `input_table` | `VARCHAR` | Qualified name of input table, e.g., `'table_name'` or `'main.table_name'` |
+
+### Analyzer Inspection
+
+Every generated FTS schema exposes the analyzer used by that index as a table
+macro:
+
+```sql
+SELECT *
+FROM fts_main_documents.analyze_text('The running foxes')
+ORDER BY position;
+```
+
+The result contains the normalized unstemmed `raw_term`, final indexed `term`,
+one-based absolute `position`, `position_increment`, `position_length`,
+`start_offset`, `end_offset`, and `token_type`. Empty tokenizer output is
+removed before positions are assigned. Stopwords are removed afterward, so
+leading and internal stopwords remain visible as position gaps.
+
+Current analyzers use a position length of one and the token type `word`.
+Offsets are reserved as nullable, half-open, zero-based UTF-8 byte offsets into
+the original input. They are currently `NULL` because normalization prevents
+the regex and OpenSearch-compatible tokenizers from mapping every token
+reliably back to the original string.
+
+`analyze_text` uses the same generated analyzer definition as bulk indexing,
+incremental maintenance, and query analysis. The lower-level list-returning
+`tokenize` macro remains available for compatibility, but it does not apply
+stopword removal or stemming. Analyzer contract changes are versioned in
+`index_metadata` and require dropping and recreating an existing index.
 
 ### `match_bm25` Function
 

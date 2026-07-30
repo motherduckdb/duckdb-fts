@@ -7,23 +7,15 @@ CREATE MACRO {{fts_schema}}.match_bm25(docname, query_string, fields := NULL, k 
                b::DOUBLE AS default_b
     ),
     {{field_scoring_config_ctes}}
-    raw_tokens AS (
-        SELECT DISTINCT raw_token
-        FROM (
-            SELECT unnest({{fts_schema}}.tokenize(query_string)) AS raw_token
-        ) AS tokenized_query
-        WHERE raw_token IS NOT NULL
-          AND raw_token <> ''
-          AND raw_token NOT IN (SELECT sw FROM {{fts_schema}}.stopwords)
+    tokenized AS (
+        SELECT unnest({{fts_schema}}.tokenize(query_string)) AS raw_term
+    ),
+    analyzed_query_tokens AS (
+        {{analyzed_tokens}}
     ),
     tokens AS (
-        SELECT t
-        FROM (
-            SELECT DISTINCT stem(raw_token, {{stemmer}}) AS t
-            FROM raw_tokens
-        ) AS stemmed_tokens
-        WHERE t IS NOT NULL
-          AND t <> ''
+        SELECT DISTINCT term AS t
+        FROM analyzed_query_tokens
     ),
     qtermids AS (
         SELECT termid

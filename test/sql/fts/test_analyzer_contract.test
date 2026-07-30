@@ -1,0 +1,349 @@
+# name: test/sql/fts/test_analyzer_contract.test
+# description: Canonical index-scoped analyzer token stream
+# group: [fts]
+
+require skip_reload
+
+require fts
+
+require no_alternative_verify
+
+statement ok
+CREATE TABLE analyzer_docs(
+    id INTEGER NOT NULL,
+    title VARCHAR,
+    body VARCHAR
+)
+
+statement ok
+INSERT INTO analyzer_docs VALUES
+    (1, 'The RUNNING,,, café foxes', 'alpha the beta'),
+    (2, 'A runner', NULL),
+    (3, '', '')
+
+statement ok
+PRAGMA create_fts_index(
+    'analyzer_docs',
+    'id',
+    'title',
+    'body',
+    stemmer='porter',
+    stopwords='english',
+    ignore='[,]+',
+    strip_accents=true,
+    lower=true,
+    layered_search=true
+)
+
+# The public stream contains normalized raw terms and final indexed terms.
+# Empty tokenizer output is removed before positions are assigned, while
+# stopwords retain gaps in the absolute position and position increment.
+query ITTTIIIIIT
+SELECT id,
+       source_field,
+       raw_term,
+       term,
+       position,
+       position_increment,
+       position_length,
+       start_offset,
+       end_offset,
+       token_type
+FROM (
+    SELECT docs.id,
+           'title' AS source_field,
+           analyzed.*
+    FROM analyzer_docs AS docs
+    CROSS JOIN LATERAL fts_main_analyzer_docs.analyze_text(docs.title) AS analyzed
+    UNION ALL
+    SELECT docs.id,
+           'body' AS source_field,
+           analyzed.*
+    FROM analyzer_docs AS docs
+    CROSS JOIN LATERAL fts_main_analyzer_docs.analyze_text(docs.body) AS analyzed
+) AS streams
+ORDER BY id,
+         source_field DESC,
+         position
+----
+1	title	running	run	2	2	1	NULL	NULL	word
+1	title	cafe	cafe	3	1	1	NULL	NULL	word
+1	title	foxes	fox	4	1	1	NULL	NULL	word
+1	body	alpha	alpha	1	1	1	NULL	NULL	word
+1	body	beta	beta	3	2	1	NULL	NULL	word
+2	title	runner	runner	2	2	1	NULL	NULL	word
+
+# Every invocation has an independent position-increment window.
+query IIII
+SELECT docs.id,
+       analyzed.position,
+       analyzed.position_increment,
+       analyzed.position_length
+FROM analyzer_docs AS docs
+CROSS JOIN LATERAL fts_main_analyzer_docs.analyze_text(docs.title) AS analyzed
+WHERE analyzed.position = (
+    SELECT min(first_token.position)
+    FROM fts_main_analyzer_docs.analyze_text(docs.title) AS first_token
+)
+ORDER BY docs.id
+----
+1	2	2	1
+2	2	2	1
+
+query TTTTTTTT
+SELECT typeof(raw_term),
+       typeof(term),
+       typeof(position),
+       typeof(position_increment),
+       typeof(position_length),
+       typeof(start_offset),
+       typeof(end_offset),
+       typeof(token_type)
+FROM fts_main_analyzer_docs.analyze_text('alpha')
+----
+VARCHAR	VARCHAR	UINTEGER	UINTEGER	UINTEGER	UINTEGER	UINTEGER	VARCHAR
+
+query II
+SELECT (SELECT count(*) FROM fts_main_analyzer_docs.analyze_text(NULL::VARCHAR)),
+       (SELECT count(*) FROM fts_main_analyzer_docs.analyze_text(''))
+----
+0	0
+
+# The canonical stream and physical positional postings contain the same
+# occurrence rows for every indexed field.
+query I
+WITH inspected AS (
+    SELECT docs.id,
+           fields.fieldid,
+           analyzed.raw_term,
+           analyzed.term,
+           analyzed.position
+    FROM analyzer_docs AS docs
+    JOIN fts_main_analyzer_docs.fields AS fields ON fields.field = 'title'
+    CROSS JOIN LATERAL fts_main_analyzer_docs.analyze_text(docs.title) AS analyzed
+    UNION ALL
+    SELECT docs.id,
+           fields.fieldid,
+           analyzed.raw_term,
+           analyzed.term,
+           analyzed.position
+    FROM analyzer_docs AS docs
+    JOIN fts_main_analyzer_docs.fields AS fields ON fields.field = 'body'
+    CROSS JOIN LATERAL fts_main_analyzer_docs.analyze_text(docs.body) AS analyzed
+),
+stored AS (
+    SELECT docs.name AS id,
+           terms.fieldid,
+           raw_dict.raw_term,
+           dict.term,
+           terms.position
+    FROM fts_main_analyzer_docs.terms AS terms
+    JOIN fts_main_analyzer_docs.docs AS docs USING (docid)
+    JOIN fts_main_analyzer_docs.dict AS dict USING (termid)
+    JOIN fts_main_analyzer_docs.raw_dict AS raw_dict USING (rawtermid)
+)
+SELECT count(*)
+FROM (
+    (FROM inspected EXCEPT ALL FROM stored)
+    UNION ALL
+    (FROM stored EXCEPT ALL FROM inspected)
+)
+----
+0
+
+# Metadata versions the index layout and token-stream contract independently.
+query IIII
+SELECT format_version,
+       analyzer_version,
+       analyzer_config LIKE 'version:1:1;%',
+       analyzer_fingerprint = md5(analyzer_config)
+FROM fts_main_analyzer_docs.index_metadata
+----
+3	1	true	true
+
+# The OpenSearch-compatible tokenizer feeds the same analyzer contract.
+statement ok
+CREATE TABLE opensearch_analyzer_docs(id INTEGER, body VARCHAR)
+
+statement ok
+INSERT INTO opensearch_analyzer_docs VALUES
+    (1, 'Привет-мир مرحبا 🙂test')
+
+statement ok
+PRAGMA create_fts_index(
+    'opensearch_analyzer_docs',
+    'id',
+    'body',
+    tokenizer='opensearch_standard',
+    stemmer='none',
+    stopwords='none',
+    layered_search=true
+)
+
+query TTIII
+SELECT raw_term,
+       term,
+       position,
+       position_increment,
+       position_length
+FROM fts_main_opensearch_analyzer_docs.analyze_text(
+    'Привет-мир مرحبا 🙂test'
+)
+ORDER BY position
+----
+привет	привет	1	1	1
+мир	мир	2	1	1
+مرحبا	مرحبا	3	1	1
+🙂	🙂	4	1	1
+test	test	5	1	1
+
+# Incremental inserts produce the same postings as the bulk build.
+statement ok
+CREATE TABLE incremental_analyzer_docs(
+    id INTEGER NOT NULL,
+    title VARCHAR,
+    body VARCHAR
+)
+
+statement ok
+PRAGMA create_fts_index(
+    'incremental_analyzer_docs',
+    'id',
+    'title',
+    'body',
+    stemmer='porter',
+    stopwords='english',
+    ignore='[,]+',
+    strip_accents=true,
+    lower=true,
+    layered_search=true,
+    incremental=true
+)
+
+statement ok
+INSERT INTO incremental_analyzer_docs
+SELECT *
+FROM analyzer_docs
+
+query I
+WITH bulk AS (
+    SELECT docs.name,
+           dict.term,
+           raw_dict.raw_term,
+           terms.fieldid,
+           terms.position
+    FROM fts_main_analyzer_docs.terms AS terms
+    JOIN fts_main_analyzer_docs.docs AS docs USING (docid)
+    JOIN fts_main_analyzer_docs.dict AS dict USING (termid)
+    JOIN fts_main_analyzer_docs.raw_dict AS raw_dict USING (rawtermid)
+),
+incremental AS (
+    SELECT docs.name,
+           dict.term,
+           raw_dict.raw_term,
+           terms.fieldid,
+           terms.position
+    FROM fts_main_incremental_analyzer_docs.terms AS terms
+    JOIN fts_main_incremental_analyzer_docs.docs AS docs USING (docid)
+    JOIN fts_main_incremental_analyzer_docs.dict AS dict USING (termid)
+    JOIN fts_main_incremental_analyzer_docs.raw_dict AS raw_dict USING (rawtermid)
+)
+SELECT count(*)
+FROM (
+    (FROM bulk EXCEPT ALL FROM incremental)
+    UNION ALL
+    (FROM incremental EXCEPT ALL FROM bulk)
+)
+----
+0
+
+statement ok
+DELETE FROM incremental_analyzer_docs WHERE id = 1
+
+statement ok
+CREATE TABLE rebuilt_analyzer_docs AS
+SELECT *
+FROM incremental_analyzer_docs
+
+statement ok
+PRAGMA create_fts_index(
+    'rebuilt_analyzer_docs',
+    'id',
+    'title',
+    'body',
+    stemmer='porter',
+    stopwords='english',
+    ignore='[,]+',
+    strip_accents=true,
+    lower=true,
+    layered_search=true
+)
+
+query I
+WITH incremental AS (
+    SELECT docs.name,
+           dict.term,
+           raw_dict.raw_term,
+           terms.fieldid,
+           terms.position
+    FROM fts_main_incremental_analyzer_docs.terms AS terms
+    JOIN fts_main_incremental_analyzer_docs.docs AS docs USING (docid)
+    JOIN fts_main_incremental_analyzer_docs.dict AS dict USING (termid)
+    JOIN fts_main_incremental_analyzer_docs.raw_dict AS raw_dict USING (rawtermid)
+),
+rebuilt AS (
+    SELECT docs.name,
+           dict.term,
+           raw_dict.raw_term,
+           terms.fieldid,
+           terms.position
+    FROM fts_main_rebuilt_analyzer_docs.terms AS terms
+    JOIN fts_main_rebuilt_analyzer_docs.docs AS docs USING (docid)
+    JOIN fts_main_rebuilt_analyzer_docs.dict AS dict USING (termid)
+    JOIN fts_main_rebuilt_analyzer_docs.raw_dict AS raw_dict USING (rawtermid)
+)
+SELECT count(*)
+FROM (
+    (FROM incremental EXCEPT ALL FROM rebuilt)
+    UNION ALL
+    (FROM rebuilt EXCEPT ALL FROM incremental)
+)
+----
+0
+
+# Non-layered indexes expose the same inspection API without adding positions
+# to their physical terms table.
+statement ok
+CREATE TABLE plain_analyzer_docs(id INTEGER, body VARCHAR)
+
+statement ok
+INSERT INTO plain_analyzer_docs VALUES (1, 'the running foxes')
+
+statement ok
+PRAGMA create_fts_index(
+    'plain_analyzer_docs',
+    'id',
+    'body',
+    stemmer='porter',
+    stopwords='english'
+)
+
+query TTII
+SELECT raw_term,
+       term,
+       position,
+       position_increment
+FROM fts_main_plain_analyzer_docs.analyze_text('the running foxes')
+ORDER BY position
+----
+running	run	2	2
+foxes	fox	3	1
+
+query I
+SELECT count(*)
+FROM duckdb_columns()
+WHERE schema_name = 'fts_main_plain_analyzer_docs'
+  AND table_name = 'terms'
+  AND column_name = 'position'
+----
+0

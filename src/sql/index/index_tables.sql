@@ -10,22 +10,14 @@ WITH tokenized AS (
     {{union_fields_query}}
 ),
 stemmed_stopped AS (
-    SELECT {{term_expression}} AS term,
-           {{raw_term_select}}
-           t.docid AS docid,
-           t.fieldid AS fieldid
-           {{build_position_select}}
-    FROM tokenized AS t
-    WHERE t.w NOT NULL
-      AND t.w <> ''
-      {{stopwords_filter}}
+    {{analyzed_tokens}}
 )
-SELECT ss.term,
+SELECT stemmed_stopped.term,
        {{raw_term_output}}
-       ss.docid,
-       ss.fieldid
+       stemmed_stopped.docid,
+       stemmed_stopped.fieldid
        {{build_position_output}}
-FROM stemmed_stopped AS ss;
+FROM stemmed_stopped;
 
 CREATE TABLE {{fts_schema}}.docs AS
 WITH lengths AS (

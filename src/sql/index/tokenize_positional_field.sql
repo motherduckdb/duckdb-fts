@@ -1,4 +1,4 @@
-SELECT token.w,
+SELECT token.raw_term,
        fts_ii.rowid AS docid,
        {{field_id}} AS fieldid,
        token.position::UINTEGER AS position
@@ -8,4 +8,4 @@ CROSS JOIN LATERAL UNNEST(
         {{fts_schema}}.tokenize(fts_ii.{{input_value}}),
         lambda value: value IS NOT NULL AND value <> ''
     )
-) WITH ORDINALITY AS token(w, position)
+) WITH ORDINALITY AS token(raw_term, position)

@@ -194,7 +194,8 @@ static vector<string> BuildInsertedFieldQueries(
 static string InsertTriggerScript(const QualifiedName &qname,
                                   const string &input_id,
                                   const vector<string> &input_values,
-                                  const string &stemmer, bool layered_search) {
+                                  const string &stemmer, bool filter_stopwords,
+                                  bool layered_search) {
   vector<string> input_value_selects;
   auto tokenize_fields = BuildInsertedFieldQueries(
       qname, input_values, input_value_selects, layered_search);
@@ -218,11 +219,14 @@ static string InsertTriggerScript(const QualifiedName &qname,
       {{"new_docs_cte", SQLTemplateArgument::TrustedSQL(token_new_docs_cte)},
        {"union_fields_query",
         SQLTemplateArgument::TrustedSQL(union_fields_query)},
-       {"stemmer", SQLTemplateArgument::StringLiteral(stemmer)},
-       {"position_select",
-        SQLTemplateArgument::TrustedSQL(
-            layered_search ? ",\n           t.position AS position" : "")},
-       {"fts_schema", GetFTSSchemaArgument(qname)}});
+       {"analyzed_tokens",
+        SQLTemplateArgument::TrustedSQL(RenderAnalyzeTokenStream(
+            qname, stemmer,
+            layered_search ? ",\n       tokenized.docid,\n       "
+                             "tokenized.fieldid,\n       tokenized.position"
+                           : ",\n       tokenized.docid,\n       "
+                             "tokenized.fieldid",
+            filter_stopwords))}});
   auto trigger_names = GetFTSInsertTriggerNames(qname);
   auto raw_dict_join =
       layered_search ? "JOIN " + GetFTSSchema(qname) +
@@ -244,7 +248,11 @@ static string InsertTriggerScript(const QualifiedName &qname,
         SQLTemplateArgument::TrustedSQL(docs_new_docs_cte)},
        {"union_fields_query",
         SQLTemplateArgument::TrustedSQL(union_fields_query)},
-       {"stemmer", SQLTemplateArgument::StringLiteral(stemmer)},
+       {"analyzed_tokens",
+        SQLTemplateArgument::TrustedSQL(RenderAnalyzeTokenStream(
+            qname, stemmer,
+            ",\n       tokenized.docid,\n       tokenized.fieldid",
+            filter_stopwords))},
        {"field_length_aggregates",
         SQLTemplateArgument::TrustedSQL(
             FieldLengthAggregateList(input_values.size()))},
@@ -284,7 +292,8 @@ static string InsertTriggerScript(const QualifiedName &qname,
 static string ClusteredInsertTriggerScript(const QualifiedName &qname,
                                            const string &input_id,
                                            const vector<string> &input_values,
-                                           const string &stemmer) {
+                                           const string &stemmer,
+                                           bool filter_stopwords) {
   vector<string> input_value_selects;
   auto tokenize_fields = BuildInsertedFieldQueries(qname, input_values,
                                                    input_value_selects, false);
@@ -308,8 +317,11 @@ static string ClusteredInsertTriggerScript(const QualifiedName &qname,
       {{"new_docs_cte", SQLTemplateArgument::TrustedSQL(token_new_docs_cte)},
        {"union_fields_query",
         SQLTemplateArgument::TrustedSQL(union_fields_query)},
-       {"stemmer", SQLTemplateArgument::StringLiteral(stemmer)},
-       {"fts_schema", GetFTSSchemaArgument(qname)}});
+       {"analyzed_tokens",
+        SQLTemplateArgument::TrustedSQL(RenderAnalyzeTokenStream(
+            qname, stemmer,
+            ",\n       tokenized.docid,\n       tokenized.fieldid",
+            filter_stopwords))}});
   auto trigger_names = GetFTSClusteredInsertTriggerNames(qname);
   return RenderSQLTemplate(
       fts_sql::CLUSTERED_INSERT_TRIGGERS,
@@ -327,7 +339,11 @@ static string ClusteredInsertTriggerScript(const QualifiedName &qname,
         SQLTemplateArgument::TrustedSQL(docs_new_docs_cte)},
        {"union_fields_query",
         SQLTemplateArgument::TrustedSQL(union_fields_query)},
-       {"stemmer", SQLTemplateArgument::StringLiteral(stemmer)},
+       {"analyzed_tokens",
+        SQLTemplateArgument::TrustedSQL(RenderAnalyzeTokenStream(
+            qname, stemmer,
+            ",\n       tokenized.docid,\n       tokenized.fieldid",
+            filter_stopwords))},
        {"field_length_aggregates",
         SQLTemplateArgument::TrustedSQL(
             FieldLengthAggregateList(input_values.size()))},
@@ -346,7 +362,8 @@ static string ClusteredInsertTriggerScript(const QualifiedName &qname,
 static string DeleteTriggerScript(const QualifiedName &qname,
                                   const string &input_id,
                                   const vector<string> &input_values,
-                                  const string &stemmer, bool layered_search) {
+                                  const string &stemmer, bool filter_stopwords,
+                                  bool layered_search) {
   vector<string> tokenize_fields;
   for (auto &input_value : input_values) {
     tokenize_fields.push_back(RenderSQLTemplate(
@@ -358,8 +375,9 @@ static string DeleteTriggerScript(const QualifiedName &qname,
       fts_sql::DELETE_TOKEN_CTES,
       {{"union_fields_query", SQLTemplateArgument::TrustedSQL(StringUtil::Join(
                                   tokenize_fields, " UNION ALL "))},
-       {"stemmer", SQLTemplateArgument::StringLiteral(stemmer)},
-       {"fts_schema", GetFTSSchemaArgument(qname)}});
+       {"analyzed_tokens",
+        SQLTemplateArgument::TrustedSQL(
+            RenderAnalyzeTokenStream(qname, stemmer, "", filter_stopwords))}});
   auto trigger_names = GetFTSDeleteTriggerNames(qname);
   return RenderSQLTemplate(
       fts_sql::DELETE_TRIGGERS,
@@ -415,23 +433,25 @@ static string ClusteredDeleteTriggerScript(const QualifiedName &qname,
 string FTSIndexMaintenance::Create(const QualifiedName &qname,
                                    const string &input_id,
                                    const vector<string> &input_values,
-                                   const string &stemmer, bool cluster_terms,
-                                   bool layered_search) {
+                                   const string &stemmer, bool filter_stopwords,
+                                   bool cluster_terms, bool layered_search) {
   string result = IncrementalIndexSetupScript(qname);
   if (layered_search) {
-    result += InsertTriggerScript(qname, input_id, input_values, stemmer, true);
-    result += DeleteTriggerScript(qname, input_id, input_values, stemmer, true);
+    result += InsertTriggerScript(qname, input_id, input_values, stemmer,
+                                  filter_stopwords, true);
+    result += DeleteTriggerScript(qname, input_id, input_values, stemmer,
+                                  filter_stopwords, true);
   } else if (cluster_terms) {
     result += ClusteredIncrementalIndexSetupScript(qname);
-    result +=
-        ClusteredInsertTriggerScript(qname, input_id, input_values, stemmer);
+    result += ClusteredInsertTriggerScript(qname, input_id, input_values,
+                                           stemmer, filter_stopwords);
     result +=
         ClusteredDeleteTriggerScript(qname, input_id, input_values.size());
   } else {
-    result +=
-        InsertTriggerScript(qname, input_id, input_values, stemmer, false);
-    result +=
-        DeleteTriggerScript(qname, input_id, input_values, stemmer, false);
+    result += InsertTriggerScript(qname, input_id, input_values, stemmer,
+                                  filter_stopwords, false);
+    result += DeleteTriggerScript(qname, input_id, input_values, stemmer,
+                                  filter_stopwords, false);
   }
   return result;
 }

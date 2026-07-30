@@ -70,9 +70,10 @@ WHERE schema_name = 'fts_main_phrase_docs'
 ----
 UINTEGER
 
-# Index metadata describes the physical format and canonical analyzer.
-query IIIIIIII
+# Index metadata versions the positional layout and analyzer stream contract.
+query IIIIIIIII
 SELECT format_version,
+       analyzer_version,
        incremental,
        cluster_terms,
        layered_search,
@@ -82,7 +83,7 @@ SELECT format_version,
        analyzer_fingerprint = md5(analyzer_config)
 FROM fts_main_phrase_docs.index_metadata
 ----
-2	true	true	true	true	true	32	true
+3	1	true	true	true	true	true	32	true
 
 # Analyzer identity follows effective stopword contents, while source names are
 # retained separately as provenance.
@@ -274,6 +275,12 @@ EXECUTE phrase_docnames('vector the dat', NULL, 32, 0.15, 50000, true, true, tru
 ----
 p2
 p9
+
+# A trailing stopword remains the unfinished prefix and must not make the
+# preceding analyzed token fall back to one-token autocomplete.
+query I
+EXECUTE phrase_docnames('vector the', NULL, 32, 0.15, 50000, true, true, true, true, 1.2, 0.75, 'phrase_prefix')
+----
 
 # Standard expansion switches and document-frequency caps do not constrain the
 # dedicated final-token prefix path.

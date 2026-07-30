@@ -12,6 +12,8 @@ set(FTS_SQL_ASSETS
     "ENGLISH_STOPWORDS|src/sql/index/english_stopwords.sql"
     "IMPORT_STOPWORDS|src/sql/index/import_stopwords.sql"
     "TOKENIZE_MACRO|src/sql/index/tokenize_macro.sql"
+    "ANALYZE_TOKEN_STREAM|src/sql/index/analyze_token_stream.sql"
+    "ANALYZE_TEXT_MACRO|src/sql/index/analyze_text_macro.sql"
     "INDEX_TABLES|src/sql/index/index_tables.sql"
     "TOKENIZE_FIELD|src/sql/index/tokenize_field.sql"
     "TOKENIZE_POSITIONAL_FIELD|src/sql/index/tokenize_positional_field.sql"

@@ -1,4 +1,4 @@
-SELECT unnest(tokens) AS w,
+SELECT unnest(tokens) AS raw_term,
        fts_ii.docid AS docid,
        (SELECT fieldid
         FROM {{fts_schema}}.fields

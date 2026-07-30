@@ -28,6 +28,7 @@ analyzer_metadata AS (
     FROM stopword_config
 )
 SELECT {{format_version}}::UINTEGER AS format_version,
+       {{analyzer_version}}::UINTEGER AS analyzer_version,
        {{incremental}}::BOOLEAN AS incremental,
        {{cluster_terms}}::BOOLEAN AS cluster_terms,
        {{layered_search}}::BOOLEAN AS layered_search,

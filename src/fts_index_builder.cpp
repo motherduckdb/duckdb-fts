@@ -10,7 +10,8 @@
 
 namespace duckdb {
 
-static constexpr int64_t FTS_INDEX_FORMAT_VERSION = 2;
+static constexpr int64_t FTS_INDEX_FORMAT_VERSION = 3;
+static constexpr int64_t FTS_ANALYZER_VERSION = 1;
 
 static string SchemaSetupScript(const QualifiedName &qname) {
   return RenderSQLTemplate(fts_sql::SCHEMA_SETUP,
@@ -34,6 +35,8 @@ static void AppendAnalyzerConfigValue(string &result, const string &name,
 
 static string AnalyzerConfigBase(const FTSIndexConfig &config) {
   string result;
+  AppendAnalyzerConfigValue(result, "version",
+                            std::to_string(FTS_ANALYZER_VERSION));
   AppendAnalyzerConfigValue(result, "stemmer", config.stemmer);
   AppendAnalyzerConfigValue(result, "tokenizer", config.tokenizer);
   AppendAnalyzerConfigValue(result, "ignore", config.ignore);
@@ -87,20 +90,26 @@ static string TokenizeMacroScript(const QualifiedName &qname,
        {"token_expression", SQLTemplateArgument::TrustedSQL(expr)}});
 }
 
-static string IndexTablesScript(
-    const QualifiedName &qname, const string &input_id,
-    const vector<string> &input_values, const string &stemmer,
-    FTSStopwordsMode stopwords_mode, const string &build_terms_table,
-    const string &build_dict_table, const string &build_raw_dict_table,
-    bool cluster_terms, bool layered_search) {
-  string term_expression =
-      stemmer == "none" ? "t.w"
-                        : "stem(t.w, " + SQLString::ToString(stemmer) + ")";
-  string stopwords_filter = stopwords_mode == FTSStopwordsMode::NONE
-                                ? string("")
-                                : "AND t.w NOT IN (SELECT sw FROM " +
-                                      GetFTSSchema(qname) + ".stopwords)";
+static string AnalyzeTextMacroScript(const QualifiedName &qname,
+                                     const string &stemmer,
+                                     bool filter_stopwords) {
+  return RenderSQLTemplate(
+      fts_sql::ANALYZE_TEXT_MACRO,
+      {{"fts_schema", GetFTSSchemaArgument(qname)},
+       {"analyzed_tokens",
+        SQLTemplateArgument::TrustedSQL(RenderAnalyzeTokenStream(
+            qname, stemmer, ",\n       tokenized.position",
+            filter_stopwords))}});
+}
 
+static string IndexTablesScript(const QualifiedName &qname,
+                                const string &input_id,
+                                const vector<string> &input_values,
+                                const string &build_terms_table,
+                                const string &build_dict_table,
+                                const string &build_raw_dict_table,
+                                const string &stemmer, bool filter_stopwords,
+                                bool cluster_terms, bool layered_search) {
   vector<string> field_values;
   vector<string> tokenize_fields;
   for (idx_t i = 0; i < input_values.size(); i++) {
@@ -157,18 +166,20 @@ static string IndexTablesScript(
         SQLTemplateArgument::TrustedSQL(build_raw_dict_table)},
        {"union_fields_query", SQLTemplateArgument::TrustedSQL(StringUtil::Join(
                                   tokenize_fields, " UNION ALL "))},
-       {"term_expression", SQLTemplateArgument::TrustedSQL(term_expression)},
-       {"raw_term_select", SQLTemplateArgument::TrustedSQL(
-                               layered_search ? "t.w AS raw_term," : "")},
-       {"stopwords_filter", SQLTemplateArgument::TrustedSQL(stopwords_filter)},
+       {"analyzed_tokens",
+        SQLTemplateArgument::TrustedSQL(RenderAnalyzeTokenStream(
+            qname, stemmer,
+            layered_search ? ",\n       tokenized.docid,\n       "
+                             "tokenized.fieldid,\n       tokenized.position"
+                           : ",\n       tokenized.docid,\n       "
+                             "tokenized.fieldid",
+            filter_stopwords))},
        {"raw_term_output",
-        SQLTemplateArgument::TrustedSQL(layered_search ? "ss.raw_term," : "")},
-       {"build_position_select",
         SQLTemplateArgument::TrustedSQL(
-            layered_search ? ",\n           t.position AS position" : "")},
+            layered_search ? "stemmed_stopped.raw_term," : "")},
        {"build_position_output",
-        SQLTemplateArgument::TrustedSQL(layered_search ? ",\n       ss.position"
-                                                       : "")},
+        SQLTemplateArgument::TrustedSQL(
+            layered_search ? ",\n       stemmed_stopped.position" : "")},
        {"field_length_aggregates",
         SQLTemplateArgument::TrustedSQL(
             FieldLengthAggregateList(input_values.size()))},
@@ -204,6 +215,7 @@ static string IndexMetadataScript(const FTSIndexConfig &config) {
       {{"fts_schema", GetFTSSchemaArgument(config.input_table)},
        {"format_version",
         SQLTemplateArgument::Integer(FTS_INDEX_FORMAT_VERSION)},
+       {"analyzer_version", SQLTemplateArgument::Integer(FTS_ANALYZER_VERSION)},
        {"incremental", SQLTemplateArgument::Boolean(config.incremental)},
        {"cluster_terms", SQLTemplateArgument::Boolean(config.cluster_terms)},
        {"layered_search", SQLTemplateArgument::Boolean(config.layered_search)},
@@ -265,11 +277,13 @@ static string FieldScoringScoreCTEs(const QualifiedName &qname) {
 }
 
 static string MatchMacroScript(const QualifiedName &qname,
-                               const string &stemmer) {
+                               const string &stemmer, bool filter_stopwords) {
   return RenderSQLTemplate(
       fts_sql::MATCH_BM25,
       {{"fts_schema", GetFTSSchemaArgument(qname)},
-       {"stemmer", SQLTemplateArgument::StringLiteral(stemmer)},
+       {"analyzed_tokens",
+        SQLTemplateArgument::TrustedSQL(
+            RenderAnalyzeTokenStream(qname, stemmer, "", filter_stopwords))},
        {"field_scoring_config_ctes",
         SQLTemplateArgument::TrustedSQL(FieldScoringConfigCTEs(qname))},
        {"field_scoring_score_ctes",
@@ -277,11 +291,39 @@ static string MatchMacroScript(const QualifiedName &qname,
 }
 
 static string LayeredSearchTableMacroScript(const QualifiedName &qname,
-                                            const string &stemmer) {
+                                            const string &stemmer,
+                                            bool filter_stopwords) {
+  auto is_final_token =
+      filter_stopwords
+          ? ",\n           generate_subscripts(tokens, 1) = len(tokens) "
+            "AS is_final_token"
+          : "";
+  auto phrase_prefix_stopword_token =
+      filter_stopwords ? "UNION ALL\n"
+                         "    SELECT tokenized.raw_term AS raw_token,\n"
+                         "           NULL::VARCHAR AS term,\n"
+                         "           tokenized.token_position\n"
+                         "    FROM tokenized\n"
+                         "    CROSS JOIN params\n"
+                         "    WHERE params.query_mode = 'phrase_prefix'\n"
+                         "      AND tokenized.is_final_token\n"
+                         "      AND tokenized.raw_term IN (\n"
+                         "          SELECT sw\n"
+                         "          FROM " +
+                             GetFTSSchema(qname) +
+                             ".stopwords\n"
+                             "      )"
+                       : "";
   return RenderSQLTemplate(
       fts_sql::SEARCH_LAYERED_BM25,
       {{"fts_schema", GetFTSSchemaArgument(qname)},
-       {"stemmer", SQLTemplateArgument::StringLiteral(stemmer)},
+       {"is_final_token", SQLTemplateArgument::TrustedSQL(is_final_token)},
+       {"analyzed_tokens",
+        SQLTemplateArgument::TrustedSQL(RenderAnalyzeTokenStream(
+            qname, stemmer, ",\n       tokenized.token_position",
+            filter_stopwords))},
+       {"phrase_prefix_stopword_token",
+        SQLTemplateArgument::TrustedSQL(phrase_prefix_stopword_token)},
        {"field_scoring_config_ctes",
         SQLTemplateArgument::TrustedSQL(FieldScoringConfigCTEs(qname))},
        {"field_scoring_score_ctes",
@@ -316,9 +358,11 @@ static string StructuredLayeredSearchMacroScript(const QualifiedName &qname) {
 
 static string LayeredSearchMacroScript(const QualifiedName &qname,
                                        const string &stemmer,
+                                       bool filter_stopwords,
                                        bool include_structured_queries) {
-  auto result = LayeredSearchTableMacroScript(qname, stemmer) +
-                LayeredMatchMacroScript(qname);
+  auto result =
+      LayeredSearchTableMacroScript(qname, stemmer, filter_stopwords) +
+      LayeredMatchMacroScript(qname);
   if (include_structured_queries) {
     result += StructuredLayeredSearchMacroScript(qname);
   }
@@ -336,22 +380,24 @@ string FTSIndexBuilder::Create(const FTSIndexConfig &config,
   result += StopwordsScript(config);
   result += TokenizeMacroScript(qname, config.tokenizer, config.ignore,
                                 config.strip_accents, config.lower);
+  auto filter_stopwords = config.stopwords_mode != FTSStopwordsMode::NONE;
+  result += AnalyzeTextMacroScript(qname, config.stemmer, filter_stopwords);
   result += IndexTablesScript(
-      qname, config.input_id, config.input_values, config.stemmer,
-      config.stopwords_mode, GetFTSBuildTermsTable(qname),
+      qname, config.input_id, config.input_values, GetFTSBuildTermsTable(qname),
       GetFTSBuildDictTable(qname), GetFTSBuildRawDictTable(qname),
-      config.cluster_terms, config.layered_search);
+      config.stemmer, filter_stopwords, config.cluster_terms,
+      config.layered_search);
   result += IndexMetadataScript(config);
-  result += MatchMacroScript(qname, config.stemmer);
+  result += MatchMacroScript(qname, config.stemmer, filter_stopwords);
   if (config.layered_search) {
     result += LayeredSidecarScript(qname);
-    result += LayeredSearchMacroScript(qname, config.stemmer,
+    result += LayeredSearchMacroScript(qname, config.stemmer, filter_stopwords,
                                        config.structured_queries);
   }
   if (config.incremental) {
     result += FTSIndexMaintenance::Create(
         qname, config.input_id, config.input_values, config.stemmer,
-        config.cluster_terms, config.layered_search);
+        filter_stopwords, config.cluster_terms, config.layered_search);
   }
   return result;
 }

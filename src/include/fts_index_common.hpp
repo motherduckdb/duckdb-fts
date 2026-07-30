@@ -11,6 +11,10 @@ string GetFTSSchema(const QualifiedName &qname);
 SQLTemplateArgument GetFTSSchemaArgument(const QualifiedName &qname);
 string GetQualifiedTableName(const QualifiedName &qname);
 SQLTemplateArgument GetQualifiedTableArgument(const QualifiedName &qname);
+string RenderAnalyzeTokenStream(const QualifiedName &qname,
+                                const string &stemmer,
+                                const string &passthrough,
+                                bool filter_stopwords);
 
 vector<string> GetFTSInsertTriggerNames(const QualifiedName &qname);
 vector<string> GetFTSClusteredInsertTriggerNames(const QualifiedName &qname);
