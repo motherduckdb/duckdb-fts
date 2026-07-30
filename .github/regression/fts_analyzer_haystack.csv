@@ -1,0 +1,2 @@
+benchmark/fts/layered_autocomplete/haystack/analyze_regex.benchmark
+benchmark/fts/layered_autocomplete/haystack/analyze_opensearch.benchmark

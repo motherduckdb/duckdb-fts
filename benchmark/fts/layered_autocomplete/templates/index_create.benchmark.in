@@ -26,7 +26,17 @@ SELECT count(*) = ${rows} FROM documents
 true
 
 run
-PRAGMA create_fts_index('documents', 'id', 'title', 'body', stemmer='porter', stopwords='none', layered_search=true, incremental=true)
+PRAGMA create_fts_index(
+    'documents',
+    'id',
+    'title',
+    'body',
+    stemmer='porter',
+    tokenizer='${tokenizer}',
+    stopwords='none',
+    layered_search=${layered_search},
+    incremental=${incremental}
+)
 
 cleanup
 PRAGMA drop_fts_index('documents');

@@ -1,0 +1,4 @@
+template benchmark/fts/layered_autocomplete/templates/analyze_text.benchmark.in
+display_name=FTS regex analyzer inspection (1M)
+rows=1000000
+tokenizer=regex

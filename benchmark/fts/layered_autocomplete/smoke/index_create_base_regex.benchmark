@@ -1,6 +1,6 @@
 template benchmark/fts/layered_autocomplete/templates/index_create.benchmark.in
-display_name=FTS layered index creation (1M)
-rows=1000000
+display_name=FTS base regex index creation (50K)
+rows=50000
 tokenizer=regex
-layered_search=true
+layered_search=false
 incremental=true

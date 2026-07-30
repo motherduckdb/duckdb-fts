@@ -1,0 +1,4 @@
+template benchmark/fts/layered_autocomplete/templates/analyze_text.benchmark.in
+display_name=FTS OpenSearch analyzer inspection (50K)
+rows=50000
+tokenizer=opensearch_standard

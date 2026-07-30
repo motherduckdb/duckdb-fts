@@ -1,4 +1,6 @@
 benchmark/fts/layered_autocomplete/haystack/index_create.benchmark
+benchmark/fts/layered_autocomplete/haystack/index_create_base_regex.benchmark
+benchmark/fts/layered_autocomplete/haystack/index_create_layered_opensearch.benchmark
 benchmark/fts/layered_autocomplete/haystack/layered_exact.benchmark
 benchmark/fts/layered_autocomplete/haystack/layered_prefix.benchmark
 benchmark/fts/layered_autocomplete/haystack/layered_substring.benchmark
