@@ -48,10 +48,9 @@ df_cap(max_df) AS (
     FROM {{fts_schema}}.stats AS stats
     CROSS JOIN params
 ),
-positioned_query_tokens AS (
-    SELECT unnest(tokens) AS raw_token,
-           generate_subscripts(tokens, 1)::BIGINT AS token_position,
-           generate_subscripts(tokens, 1) = len(tokens) AS is_final_token
+tokenized AS (
+    SELECT unnest(tokens) AS raw_term,
+           generate_subscripts(tokens, 1)::BIGINT AS token_position{{is_final_token}}
     FROM (
         SELECT list_filter(
                    {{fts_schema}}.tokenize(query_string),
@@ -59,28 +58,28 @@ positioned_query_tokens AS (
                ) AS tokens
     ) AS query_token_list
 ),
-analyzed_query_tokens AS (
-    SELECT raw_token,
-           token_position
-    FROM positioned_query_tokens
-    CROSS JOIN params
-    WHERE raw_token NOT IN (SELECT sw FROM {{fts_schema}}.stopwords)
-       OR (
-           params.query_mode = 'phrase_prefix'
-           AND is_final_token
-       )
+query_analyzer_tokens AS (
+    SELECT analyzed.raw_term AS raw_token,
+           analyzed.term,
+           analyzed.token_position
+    FROM (
+        {{analyzed_tokens}}
+    ) AS analyzed
+    {{phrase_prefix_stopword_token}}
 ),
 query_shape AS (
     SELECT count(*)::BIGINT AS token_count,
            max(token_position) AS final_position,
            CASE
-               WHEN params.query_mode = 'phrase' AND count(*) = 1
+               WHEN params.query_mode = 'phrase'
+                AND count(*) = 1
                    THEN 'standard'
-               WHEN params.query_mode = 'phrase_prefix' AND count(*) = 1
+               WHEN params.query_mode = 'phrase_prefix'
+                AND count(*) = 1
                    THEN 'autocomplete'
                ELSE params.query_mode
            END AS effective_mode
-    FROM analyzed_query_tokens
+    FROM query_analyzer_tokens
     CROSS JOIN params
     GROUP BY params.query_mode
 ),
@@ -89,7 +88,7 @@ autocomplete_final_token AS (
            length(raw_token)::BIGINT AS query_len,
            least(length(raw_token), 3)::UTINYINT AS prefix_len,
            substr(raw_token, 1, least(length(raw_token), 3)) AS prefix
-    FROM analyzed_query_tokens
+    FROM query_analyzer_tokens
     CROSS JOIN query_shape
     WHERE query_shape.effective_mode = 'autocomplete'
       AND token_position = query_shape.final_position
@@ -98,8 +97,8 @@ autocomplete_final_token AS (
 stemmed_tokens AS (
     SELECT DISTINCT query_term
     FROM (
-        SELECT stem(raw_token, {{stemmer}}) AS query_term
-        FROM analyzed_query_tokens
+        SELECT term AS query_term
+        FROM query_analyzer_tokens
         CROSS JOIN query_shape
         WHERE query_shape.effective_mode = 'standard'
            OR (
@@ -360,11 +359,11 @@ autocomplete_prefix_terms AS (
 ),
 phrase_tokens AS (
     SELECT raw_token,
-           stem(raw_token, {{stemmer}}) AS term,
+           term,
            token_position,
            token_position - 1 AS relative_position,
            token_position AS phrase_slot
-    FROM analyzed_query_tokens
+    FROM query_analyzer_tokens
     CROSS JOIN query_shape
     WHERE query_shape.effective_mode IN ('phrase', 'phrase_prefix')
 ),

@@ -1,5 +1,8 @@
 #include "fts_index_common.hpp"
 
+#include "fts_sql_assets.hpp"
+
+#include "duckdb/common/exception.hpp"
 #include "duckdb/common/sql_identifier.hpp"
 #include "duckdb/common/string_util.hpp"
 
@@ -40,6 +43,48 @@ SQLTemplateArgument GetQualifiedTableArgument(const QualifiedName &qname) {
   parts.push_back(qname.Schema().GetIdentifierName());
   parts.push_back(qname.Name().GetIdentifierName());
   return SQLTemplateArgument::QualifiedIdentifier(parts);
+}
+
+static string
+AnalyzeTokenStreamProjectionSQL(AnalyzeTokenStreamProjection projection) {
+  switch (projection) {
+  case AnalyzeTokenStreamProjection::NONE:
+    return "";
+  case AnalyzeTokenStreamProjection::POSITION:
+    return ",\n       tokenized.position";
+  case AnalyzeTokenStreamProjection::DOCID_FIELDID:
+    return ",\n       tokenized.docid,\n       tokenized.fieldid";
+  case AnalyzeTokenStreamProjection::DOCID_FIELDID_POSITION:
+    return ",\n       tokenized.docid,\n       tokenized.fieldid,\n       "
+           "tokenized.position";
+  case AnalyzeTokenStreamProjection::TOKEN_POSITION:
+    return ",\n       tokenized.token_position";
+  }
+  throw InternalException("Unsupported analyzer token stream projection");
+}
+
+string RenderAnalyzeTokenStream(const QualifiedName &qname,
+                                const FTSAnalyzerConfig &config,
+                                AnalyzeTokenStreamProjection projection) {
+  auto term_expression = config.stemmer == "none"
+                             ? "tokenized.raw_term"
+                             : "stem(tokenized.raw_term, " +
+                                   SQLString::ToString(config.stemmer) + ")";
+  auto stopwords_filter = config.filter_stopwords
+                              ? "  AND tokenized.raw_term NOT IN (\n"
+                                "      SELECT sw\n"
+                                "      FROM " +
+                                    GetFTSSchema(qname) +
+                                    ".stopwords\n"
+                                    "  )"
+                              : "";
+  return RenderSQLTemplate(
+      fts_sql::ANALYZE_TOKEN_STREAM,
+      {{"term_expression", SQLTemplateArgument::TrustedSQL(term_expression)},
+       {"projected_columns", SQLTemplateArgument::TrustedSQL(
+                                 AnalyzeTokenStreamProjectionSQL(projection))},
+       {"stopwords_filter",
+        SQLTemplateArgument::TrustedSQL(stopwords_filter)}});
 }
 
 vector<string> GetFTSInsertTriggerNames(const QualifiedName &qname) {
