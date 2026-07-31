@@ -43,6 +43,7 @@ string GetFTSBuildRawDictTable(const QualifiedName &qname);
 string GetFTSTermStatsTermIndex(const QualifiedName &qname);
 string GetFTSTermGramsGramIndex(const QualifiedName &qname);
 string GetFTSTermPrefixesPrefixIndex(const QualifiedName &qname);
+string GetFTSRawTermGramsGramIndex(const QualifiedName &qname);
 
 string FieldLengthAggregateList(idx_t field_count);
 string ZeroFieldLengthList(idx_t field_count, const string &type);

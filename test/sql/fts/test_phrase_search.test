@@ -83,7 +83,7 @@ SELECT format_version,
        analyzer_fingerprint = md5(analyzer_config)
 FROM fts_main_phrase_docs.index_metadata
 ----
-3	1	true	true	true	true	true	32	true
+4	1	true	true	true	true	true	32	true
 
 # Analyzer identity follows effective stopword contents, while source names are
 # retained separately as provenance.

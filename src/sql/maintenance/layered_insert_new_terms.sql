@@ -139,3 +139,43 @@ FOR EACH STATEMENT
     ORDER BY prefix_lengths.prefix_len,
              prefix,
              affected_raw_terms.rawtermid;
+
+CREATE TRIGGER {{trigger_19_raw_term_grams}} AFTER INSERT ON {{input_table}}
+REFERENCING NEW TABLE AS fts_new_rows
+FOR EACH STATEMENT
+    INSERT INTO {{fts_schema}}.raw_term_grams (gram, rawtermid)
+    {{token_ctes}},
+    affected_raw_terms AS (
+        SELECT DISTINCT rd.rawtermid,
+               rd.raw_term,
+               d.term
+        FROM stemmed_stopped AS ss
+        JOIN {{fts_schema}}.dict AS d ON d.term = ss.term
+        JOIN {{fts_schema}}.raw_dict AS rd
+          ON rd.raw_term = ss.raw_term
+         AND rd.termid = d.termid
+    ),
+    grams AS (
+        SELECT unnest(list_distinct([
+                   'g' || lower(hex(substr(affected_raw_terms.raw_term, i, 3)))
+                   FOR i IN range(1, length(affected_raw_terms.raw_term) - 1)
+               ])) AS gram,
+               affected_raw_terms.rawtermid
+        FROM affected_raw_terms
+        WHERE length(affected_raw_terms.raw_term) >= 3
+          AND (
+              affected_raw_terms.raw_term <> affected_raw_terms.term
+              OR regexp_full_match(affected_raw_terms.raw_term, '[0-9]+')
+          )
+    )
+    SELECT grams.gram,
+           grams.rawtermid
+    FROM grams
+    WHERE NOT EXISTS (
+        SELECT 1
+        FROM {{fts_schema}}.raw_term_grams AS raw_term_grams
+        WHERE raw_term_grams.gram = grams.gram
+          AND raw_term_grams.rawtermid = grams.rawtermid
+    )
+    ORDER BY grams.gram,
+             grams.rawtermid;

@@ -100,7 +100,10 @@ leaves AS (
            json_extract_string(node_json, '$.query') AS query_string,
            CASE
                WHEN list_contains(json_keys(node_json), 'query_mode')
-                   THEN coalesce(json_extract_string(node_json, '$.query_mode'), 'standard')
+                   THEN coalesce(
+                       lower(json_extract_string(node_json, '$.query_mode')),
+                       'standard'
+                   )
                ELSE 'standard'
            END AS query_mode,
            boost
@@ -211,7 +214,7 @@ raw_query_validation_errors AS (
     WHERE field_type = 'VARCHAR'
       AND field_name NOT IN (SELECT field FROM {{fts_schema}}.fields)
     UNION ALL
-    SELECT 'query_mode must be one of standard, autocomplete, phrase, or phrase_prefix' AS message
+    SELECT 'query_mode must be one of standard, autocomplete, phrase, phrase_prefix, wildcard, or regex' AS message
     FROM query_nodes
     WHERE has_query
       AND list_contains(json_keys(node_json), 'query_mode')
@@ -221,7 +224,9 @@ raw_query_validation_errors AS (
               'standard',
               'autocomplete',
               'phrase',
-              'phrase_prefix'
+              'phrase_prefix',
+              'wildcard',
+              'regex'
           )
       )
     UNION ALL
@@ -302,17 +307,180 @@ selected_validation_error AS (
     ORDER BY priority, message
     LIMIT 1
 ),
-leaf_scores AS (
+prepared_leaves AS (
+    SELECT leaves.node_id,
+           leaves.depth,
+           leaves.query_string,
+           leaves.query_mode,
+           leaves.boost,
+           field_lists.fields
+    FROM leaves
+    LEFT JOIN field_lists USING (node_id)
+),
+non_pattern_leaves AS MATERIALIZED (
+    SELECT *
+    FROM prepared_leaves
+    WHERE query_mode NOT IN ('wildcard', 'regex')
+),
+pattern_leaves AS MATERIALIZED (
+    SELECT *
+    FROM prepared_leaves
+    WHERE query_mode IN ('wildcard', 'regex')
+),
+structured_pattern_analysis AS (
+    SELECT leaves.node_id,
+           analyzed.analysis.verification_pattern,
+           analyzed.analysis.lookup_kind,
+           analyzed.analysis.lookup_literal,
+           analyzed.analysis.error_message
+    FROM pattern_leaves AS leaves
+    CROSS JOIN LATERAL (
+        SELECT fts_analyze_pattern(
+                   leaves.query_string,
+                   leaves.query_mode
+               ) AS analysis
+    ) AS analyzed
+),
+structured_pattern_prefix_input AS (
+    SELECT node_id,
+           least(length(lookup_literal), 3)::UTINYINT AS prefix_len,
+           substr(lookup_literal, 1, least(length(lookup_literal), 3)) AS prefix,
+           lookup_literal
+    FROM structured_pattern_analysis
+    WHERE lookup_kind = 'prefix'
+),
+structured_pattern_prefix_candidates AS (
+    SELECT pattern_prefix.node_id,
+           term_prefixes.rawtermid
+    FROM structured_pattern_prefix_input AS pattern_prefix
+    JOIN {{fts_schema}}.term_prefixes AS term_prefixes
+      ON term_prefixes.prefix_len = pattern_prefix.prefix_len
+     AND term_prefixes.prefix = pattern_prefix.prefix
+    JOIN {{fts_schema}}.raw_dict AS raw_dict
+      ON raw_dict.rawtermid = term_prefixes.rawtermid
+    WHERE starts_with(raw_dict.raw_term, pattern_prefix.lookup_literal)
+),
+structured_pattern_query_grams AS (
+    SELECT DISTINCT node_id,
+                    'g' || lower(hex(substr(lookup_literal, i, 3))) AS gram
+    FROM structured_pattern_analysis,
+         range(1, length(lookup_literal) - 1) AS r(i)
+    WHERE lookup_kind = 'gram'
+),
+structured_pattern_gram_counts AS (
+    SELECT node_id,
+           count(*) AS gram_count
+    FROM structured_pattern_query_grams
+    GROUP BY node_id
+),
+structured_pattern_gram_candidates AS (
+    SELECT query_grams.node_id,
+           raw_term_grams.rawtermid
+    FROM structured_pattern_query_grams AS query_grams
+    JOIN {{fts_schema}}.raw_term_grams AS raw_term_grams USING (gram)
+    JOIN structured_pattern_gram_counts AS gram_counts USING (node_id)
+    GROUP BY query_grams.node_id,
+             raw_term_grams.rawtermid,
+             gram_counts.gram_count
+    HAVING count(*) = gram_counts.gram_count
+),
+structured_pattern_term_gram_candidates AS (
+    SELECT query_grams.node_id,
+           raw_dict.rawtermid
+    FROM structured_pattern_query_grams AS query_grams
+    JOIN {{fts_schema}}.term_grams AS term_grams USING (gram)
+    JOIN {{fts_schema}}.term_stats AS term_stats USING (termid)
+    JOIN {{fts_schema}}.raw_dict AS raw_dict
+      ON raw_dict.termid = term_stats.termid
+     AND raw_dict.raw_term = term_stats.term
+    JOIN structured_pattern_gram_counts AS gram_counts USING (node_id)
+    GROUP BY query_grams.node_id,
+             raw_dict.rawtermid,
+             gram_counts.gram_count
+    HAVING count(DISTINCT query_grams.gram) = gram_counts.gram_count
+),
+structured_pattern_candidate_rawterms AS (
+    SELECT *
+    FROM structured_pattern_prefix_candidates
+    UNION
+    SELECT *
+    FROM structured_pattern_gram_candidates
+    UNION
+    SELECT *
+    FROM structured_pattern_term_gram_candidates
+),
+structured_verified_pattern_terms AS (
+    SELECT candidates.node_id,
+           candidates.rawtermid
+    FROM structured_pattern_candidate_rawterms AS candidates
+    JOIN {{fts_schema}}.raw_dict AS raw_dict USING (rawtermid)
+    JOIN structured_pattern_analysis AS analysis USING (node_id)
+    WHERE regexp_full_match(
+        raw_dict.raw_term,
+        analysis.verification_pattern
+    )
+),
+structured_pattern_fields AS (
+    SELECT leaves.node_id,
+           fts_fields.fieldid,
+           coalesce(
+               map_extract_value(query_params.scoring_weights, fts_fields.field),
+               1.0
+           )::DOUBLE AS field_weight
+    FROM pattern_leaves AS leaves
+    CROSS JOIN {{fts_schema}}.fields AS fts_fields
+    CROSS JOIN query_params
+    WHERE NOT EXISTS (
+        SELECT 1
+        FROM field_entries
+        WHERE field_entries.node_id = leaves.node_id
+    )
+       OR EXISTS (
+           SELECT 1
+           FROM field_entries
+           WHERE field_entries.node_id = leaves.node_id
+             AND field_entries.field_name = fts_fields.field
+       )
+),
+structured_pattern_field_matches AS (
+    SELECT DISTINCT pattern_terms.node_id,
+                    terms.docid,
+                    terms.fieldid,
+                    pattern_fields.field_weight
+    FROM structured_verified_pattern_terms AS pattern_terms
+    JOIN {{fts_schema}}.terms AS terms USING (rawtermid)
+    JOIN structured_pattern_fields AS pattern_fields
+      ON pattern_fields.node_id = pattern_terms.node_id
+     AND pattern_fields.fieldid = terms.fieldid
+),
+structured_pattern_scores AS (
+    SELECT pattern_matches.node_id,
+           pattern_matches.docid,
+           CASE query_params.scoring_model
+               WHEN 'bm25f' THEN sum(pattern_matches.field_weight)
+               ELSE max(pattern_matches.field_weight)
+                   + query_params.scoring_tie_breaker * (
+                       sum(pattern_matches.field_weight)
+                       - max(pattern_matches.field_weight)
+                   )
+           END::DOUBLE AS score
+    FROM structured_pattern_field_matches AS pattern_matches
+    CROSS JOIN query_params
+    GROUP BY pattern_matches.node_id,
+             pattern_matches.docid,
+             query_params.scoring_model,
+             query_params.scoring_tie_breaker
+),
+non_pattern_leaf_scores AS (
     SELECT leaves.node_id,
            leaves.depth,
            hits.docname,
            leaves.boost * hits.score AS score
-    FROM leaves
-    LEFT JOIN field_lists USING (node_id)
+    FROM non_pattern_leaves AS leaves
     CROSS JOIN query_params
-    CROSS JOIN LATERAL {{fts_schema}}.search_layered_bm25(
+    CROSS JOIN LATERAL {{fts_schema}}.__search_layered_bm25_non_pattern(
         leaves.query_string,
-        fields := field_lists.fields,
+        fields := leaves.fields,
         top_k := NULL::BIGINT,
         k := query_params.bm25_k,
         b := query_params.bm25_b,
@@ -331,6 +499,32 @@ leaf_scores AS (
         tie_breaker := query_params.scoring_tie_breaker
     ) AS hits
     WHERE NOT EXISTS (SELECT 1 FROM selected_validation_error)
+),
+pattern_leaf_scores AS (
+    SELECT leaves.node_id,
+           leaves.depth,
+           docs.name AS docname,
+           leaves.boost * pattern_scores.score AS score
+    FROM structured_pattern_scores AS pattern_scores
+    JOIN pattern_leaves AS leaves USING (node_id)
+    JOIN {{fts_schema}}.docs AS docs USING (docid)
+    WHERE NOT EXISTS (SELECT 1 FROM selected_validation_error)
+    UNION ALL
+    SELECT leaves.node_id,
+           leaves.depth,
+           error(analysis.error_message)::VARCHAR AS docname,
+           NULL::DOUBLE AS score
+    FROM structured_pattern_analysis AS analysis
+    JOIN pattern_leaves AS leaves USING (node_id)
+    WHERE analysis.error_message IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM selected_validation_error)
+),
+leaf_scores AS (
+    SELECT *
+    FROM non_pattern_leaf_scores
+    UNION ALL
+    SELECT *
+    FROM pattern_leaf_scores
 ),
 initial_node_results(node_id, docname, score, matched) AS (
     SELECT node_id,

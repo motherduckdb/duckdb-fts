@@ -45,7 +45,7 @@ create_fts_index(input_table, input_id, *input_values, stemmer = 'porter',
 | `overwrite` | `BOOLEAN` | Whether to overwrite an existing index on a table. Defaults to `0` |
 | `incremental` | `BOOLEAN` | Whether to maintain the FTS index with triggers after inserts and deletes on the input table. Defaults to `0` |
 | `cluster_terms` | `BOOLEAN` | Whether to physically order the generated `terms` table by `termid`, `fieldid`, and `docid`. This can improve query-time pruning for direct reads from the FTS tables. Defaults to `0` |
-| `layered_search` | `BOOLEAN` | Whether to build the dictionary sidecars, positional postings, and layered BM25 search macros used by expanded, autocomplete, phrase, and phrase-prefix queries. This implies `cluster_terms`. Defaults to `0` |
+| `layered_search` | `BOOLEAN` | Whether to build the dictionary sidecars, positional postings, and layered search macros used by expanded, autocomplete, phrase, phrase-prefix, wildcard, and regex queries. This implies `cluster_terms`. Defaults to `0` |
 
 <!-- markdownlint-enable MD056 -->
 
@@ -186,7 +186,7 @@ filtering, and BM25 parameters as the base FTS index.
 | `enable_fuzzy` | `BOOLEAN` | Whether to include Damerau-Levenshtein fuzzy alternatives. Defaults to `true` |
 | `enable_short_fuzzy` | `BOOLEAN` | Whether to use a length-clustered path for short fuzzy alternatives. Defaults to `true` |
 | `expand_exact_terms` | `BOOLEAN` | Whether to also expand a query term that already has an exact dictionary match. Defaults to `false` |
-| `query_mode` | `VARCHAR` | Query execution mode. `standard` uses exact, prefix, substring, and fuzzy dictionary expansion; `autocomplete` keeps preceding tokens exact and matches the final token by raw-token prefix; `phrase` requires exact order and adjacency; `phrase_prefix` treats the final phrase token as a raw-token prefix. Defaults to `standard` |
+| `query_mode` | `VARCHAR` | Query execution mode. `standard` uses exact, prefix, substring, and fuzzy dictionary expansion; `autocomplete` keeps preceding tokens exact and matches the final token by raw-token prefix; `phrase` requires exact order and adjacency; `phrase_prefix` treats the final phrase token as a raw-token prefix; `wildcard` matches `*` and `?` patterns; `regex` matches a conservative flat RE2 subset. Defaults to `standard` |
 | `field_weights` | `MAP(VARCHAR, DOUBLE)` | Non-negative finite weights for indexed fields. Omitted fields have weight `1.0`. Defaults to `NULL` |
 | `field_b` | `MAP(VARCHAR, DOUBLE)` | Per-field BM25 length-normalization parameters. Values must be between `0.0` and `1.0`; omitted fields inherit `b`. Defaults to `NULL` |
 | `scoring_model` | `VARCHAR` | Field scoring model: `bm25f` or `best_fields`. Defaults to `bm25f` |
@@ -224,6 +224,38 @@ unfinished raw token through the prefix sidecar. `term_limit` bounds those
 deterministically ordered completions; document-frequency filters and fuzzy or
 substring expansion are not applied. A one-token phrase uses standard mode,
 while a one-token phrase-prefix uses autocomplete mode.
+
+Wildcard and regex modes treat the complete `query_string` as one whole-token
+pattern and match it verbatim against the normalized raw-term dictionary.
+Wildcard syntax supports `*`, `?`, and backslash escaping. Regex syntax is a
+flat RE2 subset containing literals, escaped non-alphanumeric literals, `.`,
+character classes, and `*`, `+`, `?`, or bounded repetition quantifiers. Groups,
+alternation, anchors, inline flags, and character-class escapes are rejected.
+The bounded native pattern analyzer validates this grammar and extracts one
+mandatory literal. Candidate generation, dictionary verification, field
+deduplication, and scoring remain relational SQL operations.
+
+An indexable pattern must contain either an unquantified leading literal prefix
+of at least two characters or another mandatory literal run of at least three
+characters. Leading prefixes use the existing prefix sidecar; internal literals
+intersect the normalized-term trigram index plus a sparse, deduplicated sidecar
+for raw forms not covered by it. Candidates are then verified with
+`regexp_full_match`, so sidecar lookup cannot introduce false matches.
+Pattern modes ignore `term_limit` and document-frequency expansion limits.
+
+Pattern clauses use constant scoring: every matching document field contributes
+once, regardless of token frequency or the number of matching raw terms. BM25F
+sums matching field weights. `best_fields` applies its normal tie-breaker formula
+to those field weights. BM25 length normalization and IDF do not apply to
+pattern clauses. Because pattern text is not passed through the index's text
+analyzer at query time, callers must use the normalized spelling; for example,
+a lowercase index does not lowercase an uppercase wildcard pattern
+automatically.
+
+Structured Boolean queries evaluate all pattern leaves together through the
+same indexed paths, carrying each leaf's node ID through candidate generation
+and scoring. Ordinary leaves continue to use the non-pattern layered core, so
+an unused pattern branch does not add a correlated search plan per leaf.
 
 Layered search can be static or incremental. With `layered_search = true` and
 `incremental = false`, the sidecar tables are built once and later table
@@ -308,15 +340,16 @@ are added and then multiplied by the group's optional `boost`. Leaf boosts are
 applied to the leaf BM25 score first.
 
 Leaves can select indexed fields with a JSON string array and choose
-`standard`, `autocomplete`, `phrase`, or `phrase_prefix` query mode
-independently. Expansion controls and field scoring configuration remain
-macro-level settings so all leaves share the same resource limits and field
-model. `scoring_model := 'bm25f'` uses canonical BM25F with optional
+`standard`, `autocomplete`, `phrase`, `phrase_prefix`, `wildcard`, or `regex`
+query mode independently. Expansion controls and field scoring configuration
+remain macro-level settings so all leaves share the same resource limits and
+field model. `scoring_model := 'bm25f'` uses canonical BM25F with optional
 `field_weights` and per-field length normalization through `field_b`;
 `best_fields` selects the strongest field and optionally incorporates the
-others through `tie_breaker`. Each leaf delegates to
-`search_layered_bm25`, then the Boolean layer combines the resulting scores.
-The structured layer reuses the existing layered index.
+others through `tie_breaker`. Ordinary leaves reuse the non-pattern layered
+core, while wildcard and regex leaves share one set-oriented indexed pattern
+pipeline. The Boolean layer combines the resulting scores over the same
+layered index.
 
 By default, query trees are limited to 1,024 leaves and a maximum Boolean depth
 of 64. Callers can lower or raise these resource limits with
