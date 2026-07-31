@@ -29,7 +29,7 @@ PRAGMA create_fts_index(
 restart no_extension_load
 
 statement ok
-INSTALL '{BUILD_DIRECTORY}/extension/fts/fts.duckdb_extension'
+FORCE INSTALL '{BUILD_DIRECTORY}/extension/fts/fts.duckdb_extension'
 
 statement ok
 SET autoload_known_extensions=true
