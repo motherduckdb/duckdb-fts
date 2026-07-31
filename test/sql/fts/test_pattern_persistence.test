@@ -11,6 +11,12 @@ require no_alternative_verify
 load {TEST_DIR}/pattern_persistence.db
 
 statement ok
+SET extension_directory='{TEST_DIR}/pattern_persistence_extensions'
+
+statement ok
+INSTALL '{BUILD_DIRECTORY}/extension/fts/fts.duckdb_extension'
+
+statement ok
 CREATE TABLE documents(id VARCHAR NOT NULL, body VARCHAR)
 
 statement ok
@@ -29,7 +35,7 @@ PRAGMA create_fts_index(
 restart no_extension_load
 
 statement ok
-FORCE INSTALL '{BUILD_DIRECTORY}/extension/fts/fts.duckdb_extension'
+SET extension_directory='{TEST_DIR}/pattern_persistence_extensions'
 
 statement ok
 SET autoload_known_extensions=true
@@ -44,6 +50,9 @@ FROM fts_main_documents.search_layered_bm25(
 d1
 
 restart no_extension_load
+
+statement ok
+SET extension_directory='{TEST_DIR}/pattern_persistence_extensions'
 
 statement ok
 LOAD json
