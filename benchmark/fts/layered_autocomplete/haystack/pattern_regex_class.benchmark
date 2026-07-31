@@ -1,0 +1,6 @@
+template benchmark/fts/layered_autocomplete/templates/pattern_query.benchmark.in
+display_name=FTS indexed regex class query (1M)
+rows=1000000
+query_string=[a-z]+star
+query_mode=regex
+expect_hits=true
