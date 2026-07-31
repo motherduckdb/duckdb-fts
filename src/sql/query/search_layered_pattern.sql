@@ -7,12 +7,17 @@ WITH params(field_weights, field_b, scoring_model, tie_breaker, default_b) AS (
            b::DOUBLE
 ),
 {{field_scoring_config_ctes}}
+fts_extension_autoload AS (
+    -- Bind DuckDB's stable FTS autoload entry before the internal analyzer.
+    SELECT stem('', 'none') AS marker
+),
 pattern_analysis AS (
     SELECT analysis.verification_pattern,
            analysis.lookup_kind,
            analysis.lookup_literal,
            analysis.error_message
-    FROM (
+    FROM fts_extension_autoload
+    CROSS JOIN LATERAL (
         SELECT fts_analyze_pattern(
                    query_string,
                    lower(query_mode::VARCHAR)

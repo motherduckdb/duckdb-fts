@@ -1,0 +1,103 @@
+# name: test/sql/fts/test_pattern_persistence.test
+# description: Persisted pattern macros autoload FTS after restart
+# group: [fts]
+
+require fts
+
+require json
+
+require no_alternative_verify
+
+load {TEST_DIR}/pattern_persistence.db
+
+statement ok
+CREATE TABLE documents(id VARCHAR NOT NULL, body VARCHAR)
+
+statement ok
+INSERT INTO documents VALUES ('d1', 'database'), ('d2', 'catalog')
+
+statement ok
+PRAGMA create_fts_index(
+    'documents',
+    'id',
+    'body',
+    stemmer='none',
+    stopwords='none',
+    layered_search=true
+)
+
+restart no_extension_load
+
+statement ok
+INSTALL '{BUILD_DIRECTORY}/extension/fts/fts.duckdb_extension'
+
+statement ok
+SET autoload_known_extensions=true
+
+query I
+SELECT docname
+FROM fts_main_documents.search_layered_bm25(
+    'data*',
+    query_mode := 'wildcard'
+)
+----
+d1
+
+restart no_extension_load
+
+statement ok
+LOAD json
+
+statement ok
+SET autoload_known_extensions=true
+
+query I
+SELECT docname
+FROM fts_main_documents.search_layered_bm25_query(
+    '{"query":"data*","query_mode":"wildcard"}'::JSON
+)
+----
+d1
+
+# Boolean macro installation must reject layered indexes missing current-format
+# internals instead of installing a macro that fails when called.
+statement ok
+CREATE TABLE incompatible_documents(id VARCHAR NOT NULL, body VARCHAR)
+
+statement ok
+INSERT INTO incompatible_documents VALUES ('d1', 'database')
+
+statement ok
+PRAGMA create_fts_index(
+    'incompatible_documents',
+    'id',
+    'body',
+    stemmer='none',
+    stopwords='none',
+    layered_search=true
+)
+
+statement ok
+DROP MACRO fts_main_incompatible_documents.__search_layered_bm25_non_pattern
+
+statement ok
+DROP TABLE fts_main_incompatible_documents.raw_term_grams
+
+statement ok
+DROP MACRO fts_main_incompatible_documents.search_layered_bm25_query
+
+statement ok
+DROP MACRO fts_main_incompatible_documents.match_layered_bm25_query
+
+statement error
+PRAGMA create_fts_boolean_query_macros('incompatible_documents')
+----
+create_fts_boolean_query_macros requires an FTS index using the current layered index format; drop and recreate the index with layered_search=true
+
+query I
+SELECT count(*)
+FROM duckdb_functions()
+WHERE schema_name = 'fts_main_incompatible_documents'
+  AND function_name = 'search_layered_bm25_query'
+----
+0

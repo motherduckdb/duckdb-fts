@@ -327,6 +327,10 @@ pattern_leaves AS MATERIALIZED (
     FROM prepared_leaves
     WHERE query_mode IN ('wildcard', 'regex')
 ),
+fts_extension_autoload AS (
+    -- Bind DuckDB's stable FTS autoload entry before the internal analyzer.
+    SELECT stem('', 'none') AS marker
+),
 structured_pattern_analysis AS (
     SELECT leaves.node_id,
            analyzed.analysis.verification_pattern,
@@ -334,6 +338,7 @@ structured_pattern_analysis AS (
            analyzed.analysis.lookup_literal,
            analyzed.analysis.error_message
     FROM pattern_leaves AS leaves
+    CROSS JOIN fts_extension_autoload
     CROSS JOIN LATERAL (
         SELECT fts_analyze_pattern(
                    leaves.query_string,
