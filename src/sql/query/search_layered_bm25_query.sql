@@ -407,10 +407,10 @@ structured_pattern_term_gram_candidates AS (
 structured_pattern_candidate_rawterms AS (
     SELECT *
     FROM structured_pattern_prefix_candidates
-    UNION
+    UNION ALL
     SELECT *
     FROM structured_pattern_gram_candidates
-    UNION
+    UNION ALL
     SELECT *
     FROM structured_pattern_term_gram_candidates
 ),

@@ -74,6 +74,16 @@ PRAGMA create_fts_index(
     incremental=true
 )
 
+# Incremental sidecar triggers consume only the new raw dictionary rows instead
+# of running the analyzer pipeline again.
+query II
+SELECT count(*),
+       count(*) FILTER (WHERE contains(lower(sql), 'stemmed_stopped'))
+FROM duckdb_triggers()
+WHERE trigger_name LIKE '__fts_fts_main_pattern_docs_ai_19_%'
+----
+2	0
+
 # Raw-term trigrams are unique per dictionary entry, including repeated grams.
 query I
 SELECT count(*)
@@ -494,7 +504,7 @@ FROM fts_main_pattern_docs.search_layered_bm25_query(
 ----
 pattern must contain a leading literal prefix of at least two characters or a mandatory literal run of at least three characters
 
-# Incremental inserts add raw grams once and expose the new token immediately.
+# Incremental inserts add both pattern sidecars and expose new tokens immediately.
 statement ok
 INSERT INTO pattern_docs VALUES ('d11', 'runnings balloons', 'inserted')
 
@@ -502,6 +512,16 @@ query I
 SELECT docname
 FROM fts_main_pattern_docs.search_layered_bm25(
     '*nings',
+    fields := 'title',
+    query_mode := 'wildcard'
+)
+----
+d11
+
+query I
+SELECT docname
+FROM fts_main_pattern_docs.search_layered_bm25(
+    'ball*',
     fields := 'title',
     query_mode := 'wildcard'
 )
@@ -541,6 +561,30 @@ WITH incremental AS (
 rebuilt AS (
     SELECT raw_dict.raw_term, grams.gram
     FROM fts_main_rebuilt_pattern_docs.raw_term_grams AS grams
+    JOIN fts_main_rebuilt_pattern_docs.raw_dict AS raw_dict USING (rawtermid)
+)
+SELECT count(*)
+FROM (
+    (FROM incremental EXCEPT ALL FROM rebuilt)
+    UNION ALL
+    (FROM rebuilt EXCEPT ALL FROM incremental)
+)
+----
+0
+
+query I
+WITH incremental AS (
+    SELECT raw_dict.raw_term,
+           prefixes.prefix_len,
+           prefixes.prefix
+    FROM fts_main_pattern_docs.term_prefixes AS prefixes
+    JOIN fts_main_pattern_docs.raw_dict AS raw_dict USING (rawtermid)
+),
+rebuilt AS (
+    SELECT raw_dict.raw_term,
+           prefixes.prefix_len,
+           prefixes.prefix
+    FROM fts_main_rebuilt_pattern_docs.term_prefixes AS prefixes
     JOIN fts_main_rebuilt_pattern_docs.raw_dict AS raw_dict USING (rawtermid)
 )
 SELECT count(*)

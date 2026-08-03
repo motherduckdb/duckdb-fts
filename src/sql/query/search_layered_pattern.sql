@@ -85,10 +85,10 @@ pattern_term_gram_candidates AS (
 pattern_candidate_rawterms AS (
     SELECT rawtermid
     FROM pattern_prefix_candidates
-    UNION
+    UNION ALL
     SELECT rawtermid
     FROM pattern_gram_candidates
-    UNION
+    UNION ALL
     SELECT rawtermid
     FROM pattern_term_gram_candidates
 ),
