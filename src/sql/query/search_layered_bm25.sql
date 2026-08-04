@@ -1,4 +1,4 @@
-CREATE MACRO {{fts_schema}}.search_layered_bm25(query_string, fields := NULL, top_k := 50, k := 1.2, b := 0.75, term_limit := 32, max_df_ratio := 0.15, max_df := 50000, enable_prefix := true, enable_substring := true, enable_fuzzy := true, enable_short_fuzzy := true, expand_exact_terms := false, query_mode := 'standard', field_weights := NULL, field_b := NULL, scoring_model := 'bm25f', tie_breaker := 0.0) AS TABLE
+CREATE MACRO {{fts_schema}}.__search_layered_bm25_non_pattern(query_string, fields := NULL, top_k := 50, k := 1.2, b := 0.75, term_limit := 32, max_df_ratio := 0.15, max_df := 50000, enable_prefix := true, enable_substring := true, enable_fuzzy := true, enable_short_fuzzy := true, expand_exact_terms := false, query_mode := 'standard', field_weights := NULL, field_b := NULL, scoring_model := 'bm25f', tie_breaker := 0.0) AS TABLE
 WITH params(term_limit, max_df_ratio, max_df, enable_prefix, enable_substring, enable_fuzzy, enable_short_fuzzy, expand_exact_terms, query_mode, field_weights, field_b, scoring_model, tie_breaker, default_b) AS (
     SELECT term_limit::BIGINT,
            max_df_ratio::DOUBLE,
@@ -13,7 +13,9 @@ WITH params(term_limit, max_df_ratio, max_df, enable_prefix, enable_substring, e
                WHEN 'autocomplete' THEN 'autocomplete'
                WHEN 'phrase' THEN 'phrase'
                WHEN 'phrase_prefix' THEN 'phrase_prefix'
-               ELSE error('query_mode must be one of standard, autocomplete, phrase, or phrase_prefix')
+               WHEN 'wildcard' THEN 'wildcard'
+               WHEN 'regex' THEN 'regex'
+               ELSE error('query_mode must be one of standard, autocomplete, phrase, phrase_prefix, wildcard, or regex')
            END,
            field_weights::MAP(VARCHAR, DOUBLE),
            field_b::MAP(VARCHAR, DOUBLE),
@@ -26,16 +28,18 @@ search_validation_errors AS (
     SELECT message
     FROM (
         SELECT 10 AS priority,
-               'query_mode must be one of standard, autocomplete, phrase, or phrase_prefix' AS message
+               'query_mode must be one of standard, autocomplete, phrase, phrase_prefix, wildcard, or regex' AS message
         WHERE query_mode IS NULL
            OR lower(query_mode::VARCHAR) NOT IN (
                'standard',
                'autocomplete',
                'phrase',
-               'phrase_prefix'
+               'phrase_prefix',
+               'wildcard',
+               'regex'
            )
         UNION ALL
-        SELECT 20 AS priority,
+        SELECT 30 AS priority,
                message
         FROM validation_errors
     ) AS raw_search_validation_errors

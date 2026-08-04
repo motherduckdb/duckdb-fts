@@ -10,7 +10,7 @@
 
 namespace duckdb {
 
-static constexpr int64_t FTS_INDEX_FORMAT_VERSION = 3;
+static constexpr int64_t FTS_INDEX_FORMAT_VERSION = 4;
 static constexpr int64_t FTS_ANALYZER_VERSION = 1;
 
 static string SchemaSetupScript(const QualifiedName &qname) {
@@ -236,8 +236,9 @@ static string LayeredSidecarScript(const QualifiedName &qname) {
        {"term_grams_gram_index",
         SQLTemplateArgument::TrustedSQL(GetFTSTermGramsGramIndex(qname))},
        {"term_prefixes_prefix_index",
-        SQLTemplateArgument::TrustedSQL(
-            GetFTSTermPrefixesPrefixIndex(qname))}});
+        SQLTemplateArgument::TrustedSQL(GetFTSTermPrefixesPrefixIndex(qname))},
+       {"raw_term_grams_gram_index",
+        SQLTemplateArgument::TrustedSQL(GetFTSRawTermGramsGramIndex(qname))}});
 }
 
 static string
@@ -325,6 +326,19 @@ static string LayeredSearchTableMacroScript(const QualifiedName &qname,
         SQLTemplateArgument::TrustedSQL(FieldScoringScoreCTEs(qname))}});
 }
 
+static string LayeredPatternTableMacroScript(const QualifiedName &qname) {
+  return RenderSQLTemplate(
+      fts_sql::SEARCH_LAYERED_PATTERN,
+      {{"fts_schema", GetFTSSchemaArgument(qname)},
+       {"field_scoring_config_ctes",
+        SQLTemplateArgument::TrustedSQL(FieldScoringConfigCTEs(qname))}});
+}
+
+static string LayeredSearchDispatchMacroScript(const QualifiedName &qname) {
+  return RenderSQLTemplate(fts_sql::SEARCH_LAYERED_BM25_DISPATCH,
+                           {{"fts_schema", GetFTSSchemaArgument(qname)}});
+}
+
 static string LayeredMatchMacroScript(const QualifiedName &qname) {
   return RenderSQLTemplate(fts_sql::MATCH_LAYERED_BM25,
                            {{"fts_schema", GetFTSSchemaArgument(qname)}});
@@ -355,6 +369,8 @@ static string LayeredSearchMacroScript(const QualifiedName &qname,
                                        const FTSAnalyzerConfig &analyzer_config,
                                        bool include_structured_queries) {
   auto result = LayeredSearchTableMacroScript(qname, analyzer_config) +
+                LayeredPatternTableMacroScript(qname) +
+                LayeredSearchDispatchMacroScript(qname) +
                 LayeredMatchMacroScript(qname);
   if (include_structured_queries) {
     result += StructuredLayeredSearchMacroScript(qname);

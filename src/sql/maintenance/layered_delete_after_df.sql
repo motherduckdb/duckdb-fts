@@ -8,6 +8,16 @@ FOR EACH STATEMENT
         WHERE rd.df = 0
     );
 
+CREATE TRIGGER {{trigger_21_raw_term_grams_prune}} AFTER DELETE ON {{input_table}}
+REFERENCING OLD TABLE AS fts_old_rows
+FOR EACH STATEMENT
+    DELETE FROM {{fts_schema}}.raw_term_grams
+    WHERE rawtermid IN (
+        SELECT rd.rawtermid
+        FROM {{fts_schema}}.raw_dict AS rd
+        WHERE rd.df = 0
+    );
+
 CREATE TRIGGER {{trigger_22_raw_dict_prune}} AFTER DELETE ON {{input_table}}
 REFERENCING OLD TABLE AS fts_old_rows
 FOR EACH STATEMENT

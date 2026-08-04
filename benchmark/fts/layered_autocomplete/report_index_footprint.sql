@@ -38,6 +38,7 @@ CHECKPOINT;
 
 SELECT count(*) AS source_rows,
        (SELECT count(*) FROM fts_main_documents.terms) AS positional_posting_rows,
+       (SELECT count(*) FROM fts_main_documents.raw_term_grams) AS raw_term_gram_rows,
        any_value(footprint_before.database_bytes) AS base_database_bytes,
        any_value(database_size.total_blocks * database_size.block_size) AS indexed_database_bytes,
        any_value(

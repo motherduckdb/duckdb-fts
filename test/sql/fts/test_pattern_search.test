@@ -1,0 +1,695 @@
+# name: test/sql/fts/test_pattern_search.test
+# description: Indexed wildcard and regex search
+# group: [fts]
+
+require skip_reload
+
+require fts
+
+require json
+
+require no_alternative_verify
+
+# The native analyzer preserves Unicode literal lengths and extracts the same
+# indexed prefix or gram used by the relational candidate path.
+query TTT
+SELECT analysis.verification_pattern,
+       analysis.lookup_kind,
+       analysis.lookup_literal
+FROM (
+    SELECT fts_analyze_pattern('åß*', 'wildcard') AS analysis
+)
+----
+åß.*	prefix	åß
+
+query TTT
+SELECT analysis.verification_pattern,
+       analysis.lookup_kind,
+       analysis.lookup_literal
+FROM (
+    SELECT fts_analyze_pattern('[a-z]+base', 'regex') AS analysis
+)
+----
+[a-z]+base	gram	base
+
+query T
+SELECT analysis.error_message
+FROM (
+    SELECT fts_analyze_pattern('abc{1001}', 'regex') AS analysis
+)
+----
+regex quantifier exceeds the supported repetition limit
+
+statement ok
+CREATE TABLE pattern_docs(
+    id VARCHAR NOT NULL,
+    title VARCHAR,
+    body VARCHAR
+)
+
+statement ok
+INSERT INTO pattern_docs VALUES
+    ('d1', 'database', 'banana bandana'),
+    ('d2', 'databases', 'cabana'),
+    ('d3', 'data*base', 'bananana'),
+    ('d4', 'data?base', 'banana'),
+    ('d5', 'catalog', 'BANANAS'),
+    ('d6', 'baseball', 'nomatch'),
+    ('d7', 'database databases', 'other'),
+    ('d8', 'database', 'database'),
+    ('d9', 'café', 'accented'),
+    ('d10', 'Running', 'runner'),
+    ('d12', '123456', 'numeric')
+
+statement ok
+PRAGMA create_fts_index(
+    'pattern_docs',
+    'id',
+    'title',
+    'body',
+    stemmer='porter',
+    stopwords='none',
+    ignore=' +',
+    layered_search=true,
+    incremental=true
+)
+
+# Incremental sidecar triggers consume only the new raw dictionary rows instead
+# of running the analyzer pipeline again.
+query II
+SELECT count(*),
+       count(*) FILTER (WHERE contains(lower(sql), 'stemmed_stopped'))
+FROM duckdb_triggers()
+WHERE trigger_name LIKE '__fts_fts_main_pattern_docs_ai_19_%'
+----
+2	0
+
+# Raw-term trigrams are unique per dictionary entry, including repeated grams.
+query I
+SELECT count(*)
+FROM fts_main_pattern_docs.raw_term_grams AS grams
+JOIN fts_main_pattern_docs.raw_dict AS raw_dict USING (rawtermid)
+WHERE raw_dict.raw_term = 'bananas'
+----
+4
+
+query I
+SELECT count(*)
+FROM (
+    SELECT gram, rawtermid
+    FROM fts_main_pattern_docs.raw_term_grams
+    GROUP BY gram, rawtermid
+    HAVING count(*) > 1
+)
+----
+0
+
+# Prefix-driven wildcard candidates are verified against the whole raw token.
+query I rowsort
+SELECT docname
+FROM fts_main_pattern_docs.search_layered_bm25(
+    'data*',
+    fields := 'title',
+    query_mode := 'wildcard'
+)
+----
+d1
+d2
+d3
+d4
+d7
+d8
+
+# Internal literals use the raw-term trigram sidecar.
+query I rowsort
+SELECT docname
+FROM fts_main_pattern_docs.search_layered_bm25(
+    '*nana*',
+    fields := 'body',
+    query_mode := 'wildcard'
+)
+----
+d1
+d3
+d4
+d5
+
+# Numeric terms use the sparse raw-form sidecar because term_grams excludes them.
+query I
+SELECT docname
+FROM fts_main_pattern_docs.search_layered_bm25(
+    '*345*',
+    fields := 'title',
+    query_mode := 'wildcard'
+)
+----
+d12
+
+# Question marks match one character, while escaping restores literal meaning.
+query I rowsort
+SELECT docname
+FROM fts_main_pattern_docs.search_layered_bm25(
+    'data?base',
+    fields := 'title',
+    query_mode := 'wildcard'
+)
+----
+d3
+d4
+
+query I
+SELECT docname
+FROM fts_main_pattern_docs.search_layered_bm25(
+    'data\*base',
+    fields := 'title',
+    query_mode := 'wildcard'
+)
+----
+d3
+
+# Patterns are matched verbatim against the normalized raw dictionary.
+query I
+SELECT count(*)
+FROM fts_main_pattern_docs.search_layered_bm25(
+    'DATA*',
+    fields := 'title',
+    query_mode := 'wildcard'
+)
+----
+0
+
+query I
+SELECT docname
+FROM fts_main_pattern_docs.search_layered_bm25(
+    'cafe',
+    fields := 'title',
+    query_mode := 'wildcard'
+)
+----
+d9
+
+query I
+SELECT count(*)
+FROM fts_main_pattern_docs.search_layered_bm25(
+    'café',
+    fields := 'title',
+    query_mode := 'wildcard'
+)
+----
+0
+
+# Pattern modes do not apply expansion limits or document-frequency caps.
+query I
+SELECT count(*)
+FROM fts_main_pattern_docs.search_layered_bm25(
+    'data*',
+    fields := 'title',
+    query_mode := 'wildcard',
+    term_limit := 1,
+    max_df_ratio := 0.0,
+    max_df := 0
+)
+----
+6
+
+# Regex mode supports flat atoms, classes, escaped literals, and quantifiers.
+query I rowsort
+SELECT docname
+FROM fts_main_pattern_docs.search_layered_bm25(
+    'data[a-z]+',
+    fields := 'title',
+    query_mode := 'regex'
+)
+----
+d1
+d2
+d7
+d8
+
+query I rowsort
+SELECT docname
+FROM fts_main_pattern_docs.search_layered_bm25(
+    '[a-z]+base',
+    fields := 'title',
+    query_mode := 'regex'
+)
+----
+d1
+d7
+d8
+
+query I rowsort
+SELECT docname
+FROM fts_main_pattern_docs.search_layered_bm25(
+    'data.{1}base',
+    fields := 'title',
+    query_mode := 'regex'
+)
+----
+d3
+d4
+
+query I rowsort
+SELECT docname
+FROM fts_main_pattern_docs.search_layered_bm25(
+    'databases?',
+    fields := 'title',
+    query_mode := 'regex'
+)
+----
+d1
+d2
+d7
+d8
+
+query I
+SELECT docname
+FROM fts_main_pattern_docs.search_layered_bm25(
+    'data\?base',
+    fields := 'title',
+    query_mode := 'regex'
+)
+----
+d4
+
+# A pattern contributes once per matching document field, regardless of how
+# many distinct raw dictionary entries matched.
+query TRR
+SELECT docname, score, lag(score) OVER (ORDER BY docname)
+FROM fts_main_pattern_docs.search_layered_bm25(
+    'data*',
+    fields := 'title',
+    query_mode := 'wildcard',
+    top_k := NULL
+)
+WHERE docname IN ('d1', 'd7')
+ORDER BY docname
+----
+d1	1.0	NULL
+d7	1.0	1.0
+
+query TR
+SELECT docname, score
+FROM fts_main_pattern_docs.search_layered_bm25(
+    'data*',
+    query_mode := 'wildcard',
+    field_weights := MAP {'title': 3.0, 'body': 1.0},
+    top_k := NULL
+)
+WHERE docname IN ('d1', 'd8')
+ORDER BY docname
+----
+d1	3.0
+d8	4.0
+
+query TR
+SELECT docname, score
+FROM fts_main_pattern_docs.search_layered_bm25(
+    'data*',
+    query_mode := 'wildcard',
+    field_weights := MAP {'title': 3.0, 'body': 1.0},
+    scoring_model := 'best_fields',
+    tie_breaker := 0.5,
+    top_k := NULL
+)
+WHERE docname IN ('d1', 'd8')
+ORDER BY docname
+----
+d1	3.0
+d8	3.5
+
+# Scalar and structured APIs delegate to the same pattern execution.
+query I
+SELECT count(*)
+FROM pattern_docs
+WHERE fts_main_pattern_docs.match_layered_bm25(
+    id,
+    '*nana*',
+    fields := 'body',
+    query_mode := 'wildcard'
+) IS NOT NULL
+----
+4
+
+query I rowsort
+SELECT docname
+FROM fts_main_pattern_docs.search_layered_bm25_query(
+    '{
+      "must": [
+        {"query": "data*", "query_mode": "wildcard", "fields": ["title"]},
+        {"query": "[a-z]+base", "query_mode": "regex", "fields": ["title"]}
+      ]
+    }'::JSON
+)
+----
+d1
+d7
+d8
+
+# Dynamic mode dispatch evaluates only the matching private execution core.
+query TI rowsort
+SELECT queries.query_mode,
+       count(hits.docname)
+FROM (
+    VALUES ('running', 'standard'),
+           ('data*', 'wildcard')
+) AS queries(query_string, query_mode)
+CROSS JOIN LATERAL fts_main_pattern_docs.search_layered_bm25(
+    queries.query_string,
+    fields := 'title',
+    query_mode := queries.query_mode
+) AS hits
+GROUP BY queries.query_mode
+----
+standard	1
+wildcard	6
+
+# A single structured pattern leaf is score-equivalent to the string API.
+query I
+WITH direct AS (
+    SELECT docname, score, rank
+    FROM fts_main_pattern_docs.search_layered_bm25(
+        'data*',
+        fields := 'title',
+        query_mode := 'wildcard',
+        field_weights := MAP {'title': 3.0, 'body': 1.0},
+        scoring_model := 'best_fields',
+        tie_breaker := 0.5
+    )
+),
+structured AS (
+    SELECT docname, score, rank
+    FROM fts_main_pattern_docs.search_layered_bm25_query(
+        '{"query": "data*", "query_mode": "wildcard", "fields": ["title"]}'::JSON,
+        field_weights := MAP {'title': 3.0, 'body': 1.0},
+        scoring_model := 'best_fields',
+        tie_breaker := 0.5
+    )
+)
+SELECT count(*)
+FROM (
+    (FROM direct EXCEPT ALL FROM structured)
+    UNION ALL
+    (FROM structured EXCEPT ALL FROM direct)
+)
+----
+0
+
+# Structured mode dispatch remains case-insensitive after leaf partitioning.
+query I rowsort
+SELECT docname
+FROM fts_main_pattern_docs.search_layered_bm25_query(
+    '{"query": "data*", "query_mode": "Wildcard", "fields": ["title"]}'::JSON
+)
+----
+d1
+d2
+d3
+d4
+d7
+d8
+
+# Non-indexable and unsupported patterns fail before dictionary lookup.
+statement error
+FROM fts_main_pattern_docs.search_layered_bm25(
+    '*ab*',
+    query_mode := 'wildcard'
+)
+----
+pattern must contain a leading literal prefix of at least two characters or a mandatory literal run of at least three characters
+
+statement error
+FROM fts_main_pattern_docs.search_layered_bm25(
+    'ab\',
+    query_mode := 'wildcard'
+)
+----
+wildcard pattern must not end with an escape character
+
+statement error
+FROM fts_main_pattern_docs.search_layered_bm25(
+    '(database)',
+    query_mode := 'regex'
+)
+----
+regex pattern contains unsupported syntax
+
+statement error
+FROM fts_main_pattern_docs.search_layered_bm25(
+    '\dabc',
+    query_mode := 'regex'
+)
+----
+regex pattern contains an unsupported escape sequence
+
+statement error
+FROM fts_main_pattern_docs.search_layered_bm25(
+    '[\d]+base',
+    query_mode := 'regex'
+)
+----
+regex character classes contain an unsupported escape sequence
+
+statement error
+FROM fts_main_pattern_docs.search_layered_bm25(
+    '[\[]',
+    query_mode := 'regex'
+)
+----
+regex pattern contains unsupported character class syntax
+
+statement error
+FROM fts_main_pattern_docs.search_layered_bm25(
+    '[z-a]base',
+    query_mode := 'regex'
+)
+----
+regex pattern is invalid
+
+statement error
+FROM fts_main_pattern_docs.search_layered_bm25(
+    'ab{3,2}cde',
+    query_mode := 'regex'
+)
+----
+regex pattern contains an invalid quantifier range
+
+statement error
+FROM fts_main_pattern_docs.search_layered_bm25(
+    'a.*bc',
+    query_mode := 'regex'
+)
+----
+pattern must contain a leading literal prefix of at least two characters or a mandatory literal run of at least three characters
+
+statement error
+FROM fts_main_pattern_docs.search_layered_bm25(
+    NULL,
+    query_mode := 'wildcard'
+)
+----
+pattern must not be NULL
+
+statement error
+FROM fts_main_pattern_docs.search_layered_bm25_query(
+    '{"query":"data*","query_mode":"unsupported"}'::JSON
+)
+----
+query_mode must be one of standard, autocomplete, phrase, phrase_prefix, wildcard, or regex
+
+statement error
+FROM fts_main_pattern_docs.search_layered_bm25_query(
+    '{"query":"*ab*","query_mode":"wildcard"}'::JSON
+)
+----
+pattern must contain a leading literal prefix of at least two characters or a mandatory literal run of at least three characters
+
+# Incremental inserts add both pattern sidecars and expose new tokens immediately.
+statement ok
+INSERT INTO pattern_docs VALUES ('d11', 'runnings balloons', 'inserted')
+
+query I
+SELECT docname
+FROM fts_main_pattern_docs.search_layered_bm25(
+    '*nings',
+    fields := 'title',
+    query_mode := 'wildcard'
+)
+----
+d11
+
+query I
+SELECT docname
+FROM fts_main_pattern_docs.search_layered_bm25(
+    'ball*',
+    fields := 'title',
+    query_mode := 'wildcard'
+)
+----
+d11
+
+query I
+SELECT count(*)
+FROM fts_main_pattern_docs.raw_term_grams AS grams
+JOIN fts_main_pattern_docs.raw_dict AS raw_dict USING (rawtermid)
+WHERE raw_dict.raw_term = 'balloons'
+----
+6
+
+# A clean rebuild has identical raw-term grams and pattern results.
+statement ok
+CREATE TABLE rebuilt_pattern_docs AS FROM pattern_docs
+
+statement ok
+PRAGMA create_fts_index(
+    'rebuilt_pattern_docs',
+    'id',
+    'title',
+    'body',
+    stemmer='porter',
+    stopwords='none',
+    ignore=' +',
+    layered_search=true
+)
+
+query I
+WITH incremental AS (
+    SELECT raw_dict.raw_term, grams.gram
+    FROM fts_main_pattern_docs.raw_term_grams AS grams
+    JOIN fts_main_pattern_docs.raw_dict AS raw_dict USING (rawtermid)
+),
+rebuilt AS (
+    SELECT raw_dict.raw_term, grams.gram
+    FROM fts_main_rebuilt_pattern_docs.raw_term_grams AS grams
+    JOIN fts_main_rebuilt_pattern_docs.raw_dict AS raw_dict USING (rawtermid)
+)
+SELECT count(*)
+FROM (
+    (FROM incremental EXCEPT ALL FROM rebuilt)
+    UNION ALL
+    (FROM rebuilt EXCEPT ALL FROM incremental)
+)
+----
+0
+
+query I
+WITH incremental AS (
+    SELECT raw_dict.raw_term,
+           prefixes.prefix_len,
+           prefixes.prefix
+    FROM fts_main_pattern_docs.term_prefixes AS prefixes
+    JOIN fts_main_pattern_docs.raw_dict AS raw_dict USING (rawtermid)
+),
+rebuilt AS (
+    SELECT raw_dict.raw_term,
+           prefixes.prefix_len,
+           prefixes.prefix
+    FROM fts_main_rebuilt_pattern_docs.term_prefixes AS prefixes
+    JOIN fts_main_rebuilt_pattern_docs.raw_dict AS raw_dict USING (rawtermid)
+)
+SELECT count(*)
+FROM (
+    (FROM incremental EXCEPT ALL FROM rebuilt)
+    UNION ALL
+    (FROM rebuilt EXCEPT ALL FROM incremental)
+)
+----
+0
+
+query I
+SELECT count(*)
+FROM (
+    SELECT incremental.docname,
+           incremental.score,
+           incremental.rank
+    FROM fts_main_pattern_docs.search_layered_bm25(
+        '*nana*',
+        fields := 'body',
+        query_mode := 'wildcard'
+    ) AS incremental
+    EXCEPT ALL
+    SELECT rebuilt.docname,
+           rebuilt.score,
+           rebuilt.rank
+    FROM fts_main_rebuilt_pattern_docs.search_layered_bm25(
+        '*nana*',
+        fields := 'body',
+        query_mode := 'wildcard'
+    ) AS rebuilt
+)
+----
+0
+
+# Deleting the last use of a raw term prunes its gram rows before raw_dict.
+statement ok
+DELETE FROM pattern_docs WHERE id = 'd11'
+
+query I
+SELECT count(*)
+FROM fts_main_pattern_docs.raw_dict
+WHERE raw_term IN ('runnings', 'balloons')
+----
+0
+
+query I
+SELECT count(*)
+FROM fts_main_pattern_docs.raw_term_grams AS grams
+LEFT JOIN fts_main_pattern_docs.raw_dict AS raw_dict USING (rawtermid)
+WHERE raw_dict.rawtermid IS NULL
+----
+0
+
+# Existing standard, autocomplete, and phrase paths remain available.
+query I
+SELECT docname
+FROM fts_main_pattern_docs.search_layered_bm25(
+    'running',
+    fields := 'title',
+    query_mode := 'standard'
+)
+----
+d10
+
+query I
+SELECT docname
+FROM fts_main_pattern_docs.search_layered_bm25(
+    'runn',
+    fields := 'title',
+    query_mode := 'autocomplete'
+)
+----
+d10
+
+query I
+SELECT docname
+FROM fts_main_pattern_docs.search_layered_bm25(
+    'banana bandana',
+    fields := 'body',
+    query_mode := 'phrase'
+)
+----
+d1
+
+# Non-layered indexes do not pay for pattern dictionary sidecars.
+statement ok
+CREATE TABLE plain_pattern_docs(id INTEGER, body VARCHAR)
+
+statement ok
+INSERT INTO plain_pattern_docs VALUES (1, 'database')
+
+statement ok
+PRAGMA create_fts_index(
+    'plain_pattern_docs',
+    'id',
+    'body',
+    stemmer='none',
+    stopwords='none'
+)
+
+query I
+SELECT count(*)
+FROM information_schema.tables
+WHERE table_schema = 'fts_main_plain_pattern_docs'
+  AND table_name = 'raw_term_grams'
+----
+0

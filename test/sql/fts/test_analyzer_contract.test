@@ -238,7 +238,7 @@ SELECT format_version,
        analyzer_fingerprint = md5(analyzer_config)
 FROM fts_main_analyzer_docs.index_metadata
 ----
-3	1	true	true
+4	1	true	true
 
 # The OpenSearch-compatible tokenizer feeds the same analyzer contract.
 statement ok

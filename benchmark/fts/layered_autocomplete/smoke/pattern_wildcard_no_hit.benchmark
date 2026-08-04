@@ -1,0 +1,6 @@
+template benchmark/fts/layered_autocomplete/templates/pattern_query.benchmark.in
+display_name=FTS no-hit indexed wildcard query (50K)
+rows=50000
+query_string=*missingliteral*
+query_mode=wildcard
+expect_hits=false

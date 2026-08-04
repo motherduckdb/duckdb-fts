@@ -114,22 +114,21 @@ vector<string> GetFTSClusteredDeleteTriggerNames(const QualifiedName &qname) {
 
 vector<string> GetFTSLayeredInsertTriggerNames(const QualifiedName &qname) {
   auto prefix = StringUtil::Format("__fts_%s_ai_", GetFTSSchemaName(qname));
-  return {prefix + "15_term_stats",           prefix + "16_term_stats_by_len",
-          prefix + "17_term_grams",           prefix + "18_raw_dict",
-          prefix + "19_term_prefixes",        prefix + "35_term_stats_df",
-          prefix + "36_term_stats_by_len_df", prefix + "37_raw_dict_df"};
+  return {prefix + "15_term_stats",    prefix + "16_term_stats_by_len",
+          prefix + "17_term_grams",    prefix + "18_raw_dict",
+          prefix + "19_term_prefixes", prefix + "19_raw_term_grams",
+          prefix + "35_term_stats_df", prefix + "36_term_stats_by_len_df",
+          prefix + "37_raw_dict_df"};
 }
 
 vector<string> GetFTSLayeredDeleteTriggerNames(const QualifiedName &qname) {
   auto prefix = StringUtil::Format("__fts_%s_ad_", GetFTSSchemaName(qname));
-  return {prefix + "05_raw_dict_df",
-          prefix + "21_term_prefixes_prune",
-          prefix + "22_raw_dict_prune",
-          prefix + "23_term_stats_df",
-          prefix + "24_term_stats_by_len_df",
-          prefix + "25_term_grams_prune",
-          prefix + "26_term_stats_by_len_prune",
-          prefix + "27_term_stats_prune"};
+  return {
+      prefix + "05_raw_dict_df",          prefix + "21_term_prefixes_prune",
+      prefix + "21_raw_term_grams_prune", prefix + "22_raw_dict_prune",
+      prefix + "23_term_stats_df",        prefix + "24_term_stats_by_len_df",
+      prefix + "25_term_grams_prune",     prefix + "26_term_stats_by_len_prune",
+      prefix + "27_term_stats_prune"};
 }
 
 vector<string> GetFTSTriggerNames(const QualifiedName &qname) {
@@ -180,6 +179,11 @@ string GetFTSTermGramsGramIndex(const QualifiedName &qname) {
 string GetFTSTermPrefixesPrefixIndex(const QualifiedName &qname) {
   return SQLIdentifier::ToString("__fts_" + GetFTSSchemaName(qname) +
                                  "_term_prefixes_prefix_idx");
+}
+
+string GetFTSRawTermGramsGramIndex(const QualifiedName &qname) {
+  return SQLIdentifier::ToString("__fts_" + GetFTSSchemaName(qname) +
+                                 "_raw_term_grams_gram_idx");
 }
 
 string FieldLengthAggregateList(idx_t field_count) {

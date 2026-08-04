@@ -1,0 +1,6 @@
+template benchmark/fts/layered_autocomplete/templates/pattern_query.benchmark.in
+display_name=FTS prefix-indexed wildcard query (1M)
+rows=1000000
+query_string=north*
+query_mode=wildcard
+expect_hits=true

@@ -3,6 +3,7 @@
 #include "fts_index_common.hpp"
 #include "fts_index_maintenance.hpp"
 
+#include "duckdb/catalog/catalog_entry/table_macro_catalog_entry.hpp"
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/catalog/catalog_search_path.hpp"
 #include "duckdb/common/exception.hpp"
@@ -271,6 +272,22 @@ string FTSIndexing::CreateFTSBooleanQueryMacrosQuery(
                                             OnEntryNotFound::RETURN_NULL)) {
     throw InvalidInputException(
         "create_fts_boolean_query_macros requires an FTS index created with "
+        "layered_search=true");
+  }
+
+  auto raw_term_grams_name =
+      QualifiedName(qname.Catalog(), Identifier(GetFTSSchemaName(qname)),
+                    Identifier("raw_term_grams"));
+  auto non_pattern_search_name =
+      QualifiedName(qname.Catalog(), Identifier(GetFTSSchemaName(qname)),
+                    Identifier("__search_layered_bm25_non_pattern"));
+  if (!Catalog::GetEntry<TableCatalogEntry>(context, raw_term_grams_name,
+                                            OnEntryNotFound::RETURN_NULL) ||
+      !Catalog::GetEntry<TableMacroCatalogEntry>(
+          context, non_pattern_search_name, OnEntryNotFound::RETURN_NULL)) {
+    throw InvalidInputException(
+        "create_fts_boolean_query_macros requires an FTS index using the "
+        "current layered index format; drop and recreate the index with "
         "layered_search=true");
   }
 

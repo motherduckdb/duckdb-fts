@@ -109,19 +109,18 @@ FOR EACH STATEMENT
            0 AS df
     FROM new_raw_terms;
 
+-- Trigger 18 inserts new raw terms with df = 0. The sidecar triggers consume
+-- those rows before trigger 37 updates their document frequencies.
 CREATE TRIGGER {{trigger_19_term_prefixes}} AFTER INSERT ON {{input_table}}
 REFERENCING NEW TABLE AS fts_new_rows
 FOR EACH STATEMENT
     INSERT INTO {{fts_schema}}.term_prefixes (prefix_len, prefix, rawtermid)
-    {{token_ctes}},
+    WITH
     affected_raw_terms AS (
-        SELECT DISTINCT rd.rawtermid,
+        SELECT rd.rawtermid,
                rd.raw_term
-        FROM stemmed_stopped AS ss
-        JOIN {{fts_schema}}.dict AS d ON d.term = ss.term
-        JOIN {{fts_schema}}.raw_dict AS rd
-          ON rd.raw_term = ss.raw_term
-         AND rd.termid = d.termid
+        FROM {{fts_schema}}.raw_dict AS rd
+        WHERE rd.df = 0
     )
     SELECT prefix_lengths.prefix_len,
            substr(affected_raw_terms.raw_term, 1, prefix_lengths.prefix_len) AS prefix,
@@ -129,13 +128,38 @@ FOR EACH STATEMENT
     FROM affected_raw_terms,
          (VALUES (2::UTINYINT), (3::UTINYINT)) AS prefix_lengths(prefix_len)
     WHERE length(affected_raw_terms.raw_term) >= prefix_lengths.prefix_len
-      AND NOT EXISTS (
-          SELECT 1
-          FROM {{fts_schema}}.term_prefixes AS tp
-          WHERE tp.prefix_len = prefix_lengths.prefix_len
-            AND tp.prefix = substr(affected_raw_terms.raw_term, 1, prefix_lengths.prefix_len)
-            AND tp.rawtermid = affected_raw_terms.rawtermid
-      )
     ORDER BY prefix_lengths.prefix_len,
              prefix,
              affected_raw_terms.rawtermid;
+
+CREATE TRIGGER {{trigger_19_raw_term_grams}} AFTER INSERT ON {{input_table}}
+REFERENCING NEW TABLE AS fts_new_rows
+FOR EACH STATEMENT
+    INSERT INTO {{fts_schema}}.raw_term_grams (gram, rawtermid)
+    WITH
+    affected_raw_terms AS (
+        SELECT rd.rawtermid,
+               rd.raw_term,
+               d.term
+        FROM {{fts_schema}}.raw_dict AS rd
+        JOIN {{fts_schema}}.dict AS d USING (termid)
+        WHERE rd.df = 0
+    ),
+    grams AS (
+        SELECT unnest(list_distinct([
+                   'g' || lower(hex(substr(affected_raw_terms.raw_term, i, 3)))
+                   FOR i IN range(1, length(affected_raw_terms.raw_term) - 1)
+               ])) AS gram,
+               affected_raw_terms.rawtermid
+        FROM affected_raw_terms
+        WHERE length(affected_raw_terms.raw_term) >= 3
+          AND (
+              affected_raw_terms.raw_term <> affected_raw_terms.term
+              OR regexp_full_match(affected_raw_terms.raw_term, '[0-9]+')
+          )
+    )
+    SELECT grams.gram,
+           grams.rawtermid
+    FROM grams
+    ORDER BY grams.gram,
+             grams.rawtermid;

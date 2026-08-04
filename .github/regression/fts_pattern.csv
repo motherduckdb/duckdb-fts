@@ -1,0 +1,6 @@
+benchmark/fts/layered_autocomplete/smoke/pattern_wildcard_prefix.benchmark
+benchmark/fts/layered_autocomplete/smoke/pattern_wildcard_infix.benchmark
+benchmark/fts/layered_autocomplete/smoke/pattern_regex_class.benchmark
+benchmark/fts/layered_autocomplete/smoke/pattern_wildcard_broad.benchmark
+benchmark/fts/layered_autocomplete/smoke/pattern_wildcard_union.benchmark
+benchmark/fts/layered_autocomplete/smoke/pattern_wildcard_no_hit.benchmark

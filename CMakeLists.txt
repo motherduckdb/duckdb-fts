@@ -26,6 +26,8 @@ set(FTS_SQL_ASSETS
     "FIELD_SCORING_SCORE_CTES|src/sql/query/field_scoring_score_ctes.sql"
     "MATCH_BM25|src/sql/query/match_bm25.sql"
     "SEARCH_LAYERED_BM25|src/sql/query/search_layered_bm25.sql"
+    "SEARCH_LAYERED_PATTERN|src/sql/query/search_layered_pattern.sql"
+    "SEARCH_LAYERED_BM25_DISPATCH|src/sql/query/search_layered_bm25_dispatch.sql"
     "MATCH_LAYERED_BM25|src/sql/query/match_layered_bm25.sql"
     "SEARCH_LAYERED_BM25_QUERY|src/sql/query/search_layered_bm25_query.sql"
     "MATCH_LAYERED_BM25_QUERY|src/sql/query/match_layered_bm25_query.sql"
@@ -74,6 +76,7 @@ set(EXTENSION_SOURCES
     ${EXTENSION_BASE_FOLDER}/fts_index_common.cpp
     ${EXTENSION_BASE_FOLDER}/fts_index_maintenance.cpp
     ${EXTENSION_BASE_FOLDER}/fts_indexing.cpp
+    ${EXTENSION_BASE_FOLDER}/fts_pattern.cpp
     ${EXTENSION_BASE_FOLDER}/fts_sql_template.cpp
     ${EXTENSION_BASE_FOLDER}/fts_unicode_classifier.cpp
     ${FTS_SQL_ASSETS_SOURCE}

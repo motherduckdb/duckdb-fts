@@ -143,6 +143,7 @@ jobs:
               echo "BOOLEAN_BENCHMARKS=.github/regression/fts_boolean_haystack.csv"
               echo "PHRASE_BENCHMARKS=.github/regression/fts_phrase_haystack.csv"
               echo "ANALYZER_BENCHMARKS=.github/regression/fts_analyzer_haystack.csv"
+              echo "PATTERN_BENCHMARKS=.github/regression/fts_pattern_haystack.csv"
               echo "FOOTPRINT_ROWS=1000000"
               echo "BENCHMARK_BUDGET_SECONDS=3600"
             } >> "$GITHUB_ENV"
@@ -154,8 +155,9 @@ jobs:
               echo "BOOLEAN_BENCHMARKS=.github/regression/fts_boolean.csv"
               echo "PHRASE_BENCHMARKS=.github/regression/fts_phrase.csv"
               echo "ANALYZER_BENCHMARKS=.github/regression/fts_analyzer.csv"
+              echo "PATTERN_BENCHMARKS=.github/regression/fts_pattern.csv"
               echo "FOOTPRINT_ROWS=50000"
-              echo "BENCHMARK_BUDGET_SECONDS=300"
+              echo "BENCHMARK_BUDGET_SECONDS=600"
             } >> "$GITHUB_ENV"
           fi
 
@@ -224,10 +226,20 @@ jobs:
               --clear-benchmark-cache \
               --nofail \
               --verbose 2>&1 | tee analyzer-smoke.log
+
+            python3 duckdb/scripts/regression/test_runner.py \
+              --old "$NEW_RUNNER" \
+              --new "$NEW_RUNNER" \
+              --benchmarks "$PATTERN_BENCHMARKS" \
+              --root-dir . \
+              --threads 2 \
+              --clear-benchmark-cache \
+              --nofail \
+              --verbose 2>&1 | tee pattern-smoke.log
           }
 
           export -f run_benchmarks
-          export OLD_RUNNER NEW_RUNNER LAYERED_BENCHMARKS AUTOCOMPLETE_BENCHMARKS FIELD_SCORING_BENCHMARKS BOOLEAN_BENCHMARKS PHRASE_BENCHMARKS ANALYZER_BENCHMARKS
+          export OLD_RUNNER NEW_RUNNER LAYERED_BENCHMARKS AUTOCOMPLETE_BENCHMARKS FIELD_SCORING_BENCHMARKS BOOLEAN_BENCHMARKS PHRASE_BENCHMARKS ANALYZER_BENCHMARKS PATTERN_BENCHMARKS
           timeout "${BENCHMARK_BUDGET_SECONDS}s" bash -c run_benchmarks
 
       - name: Report positional index footprint
@@ -267,6 +279,10 @@ jobs:
             echo '```text'
             test ! -f analyzer-smoke.log || cat analyzer-smoke.log
             echo '```'
+            echo '## FTS pattern-query smoke'
+            echo '```text'
+            test ! -f pattern-smoke.log || cat pattern-smoke.log
+            echo '```'
             echo '## FTS positional index footprint'
             echo '```text'
             test ! -f phrase-footprint.log || cat phrase-footprint.log
@@ -285,5 +301,6 @@ jobs:
             boolean-regression.log
             phrase-regression.log
             analyzer-smoke.log
+            pattern-smoke.log
             phrase-footprint.log
           if-no-files-found: ignore
