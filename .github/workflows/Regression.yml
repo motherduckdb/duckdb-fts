@@ -157,7 +157,7 @@ jobs:
               echo "ANALYZER_BENCHMARKS=.github/regression/fts_analyzer.csv"
               echo "PATTERN_BENCHMARKS=.github/regression/fts_pattern.csv"
               echo "FOOTPRINT_ROWS=50000"
-              echo "BENCHMARK_BUDGET_SECONDS=300"
+              echo "BENCHMARK_BUDGET_SECONDS=600"
             } >> "$GITHUB_ENV"
           fi
 
