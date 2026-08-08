@@ -55,7 +55,7 @@ raw_field_scoring_validation_errors AS (
     SELECT 80 AS priority,
            'field_b contains unknown field: ' || key AS message
     FROM field_b_entries
-    WHERE key NOT IN (SELECT field FROM {{fts_schema}}.fields)
+    WHERE key NOT IN (SELECT field FROM {{fts_schema}}.fields){{requested_fields_validation}}
 ),
 validation_errors AS (
     SELECT message
