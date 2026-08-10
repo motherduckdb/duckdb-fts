@@ -381,6 +381,18 @@ SELECT * FROM fts_main_documents.search_layered_bm25('alpha', fields := 'missing
 ----
 fields contains unknown field: missing
 
+# A typo beside a valid name is the case that used to hide: 'title' alone still
+# matched, so the query returned results and the unknown name went unnoticed.
+statement error
+SELECT fts_main_documents.match_bm25('title_match', 'alpha', fields := 'title, missing')
+----
+fields contains unknown field: missing
+
+statement error
+SELECT * FROM fts_main_documents.search_layered_bm25('alpha', fields := 'title, missing')
+----
+fields contains unknown field: missing
+
 # 'fields' is reported before 'field_weights'.
 statement error
 SELECT fts_main_documents.match_bm25('title_match', 'alpha', fields := 'missing', field_weights := MAP {'absent': 1.0})
