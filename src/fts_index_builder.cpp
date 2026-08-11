@@ -248,7 +248,20 @@ FieldScoringValidationCTEs(const QualifiedName &qname,
                            const string &field_b_name = "field_b",
                            const string &scoring_model_name = "scoring_model",
                            const string &tie_breaker_name = "tie_breaker",
-                           const string &default_b_name = "default_b") {
+                           const string &default_b_name = "default_b",
+                           bool validate_requested_fields = true) {
+  // Checked before the weighting maps because 'fields' selects what is searched
+  // at all. An empty 'fields' selects nothing and returns no rows, which
+  // test_indexing pins deliberately.
+  auto requested_fields_validation =
+      validate_requested_fields
+          ? "\n    UNION ALL\n"
+            "    SELECT 15 AS priority,\n"
+            "           'fields contains unknown field: ' || field AS message\n"
+            "    FROM requested_fields\n"
+            "    WHERE field NOT IN (SELECT field FROM " +
+                GetFTSSchema(qname) + ".fields)"
+          : "";
   return RenderSQLTemplate(
       fts_sql::FIELD_SCORING_VALIDATION_CTES,
       {{"fts_schema", GetFTSSchemaArgument(qname)},
@@ -257,7 +270,9 @@ FieldScoringValidationCTEs(const QualifiedName &qname,
        {"field_b", SQLTemplateArgument::Identifier(field_b_name)},
        {"scoring_model", SQLTemplateArgument::Identifier(scoring_model_name)},
        {"tie_breaker", SQLTemplateArgument::Identifier(tie_breaker_name)},
-       {"default_b", SQLTemplateArgument::Identifier(default_b_name)}});
+       {"default_b", SQLTemplateArgument::Identifier(default_b_name)},
+       {"requested_fields_validation",
+        SQLTemplateArgument::TrustedSQL(requested_fields_validation)}});
 }
 
 static string FieldScoringConfigCTEs(const QualifiedName &qname) {
@@ -352,7 +367,8 @@ StructuredLayeredSearchTableMacroScript(const QualifiedName &qname) {
        {"field_scoring_validation_ctes",
         SQLTemplateArgument::TrustedSQL(FieldScoringValidationCTEs(
             qname, "query_params", "scoring_weights", "scoring_field_b",
-            "scoring_model", "scoring_tie_breaker", "bm25_b"))}});
+            "scoring_model", "scoring_tie_breaker", "bm25_b",
+            /* validate_requested_fields */ false))}});
 }
 
 static string StructuredLayeredMatchMacroScript(const QualifiedName &qname) {
