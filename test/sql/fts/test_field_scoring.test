@@ -397,6 +397,18 @@ SELECT EXISTS (SELECT 1 FROM fts_main_documents.search_layered_bm25('alpha', fie
 ----
 fields contains unknown field: missing
 
+# The scalar surface reports it too when its result is discarded.
+statement error
+SELECT count(*) FROM (SELECT fts_main_documents.match_bm25(id, 'alpha', fields := 'missing') AS unused FROM documents)
+----
+fields contains unknown field: missing
+
+# A provably empty query is not executed, so it reports nothing.
+query I
+SELECT count(*) FROM fts_main_documents.search_layered_bm25('alpha', fields := 'missing') WHERE false
+----
+0
+
 # An unknown name in 'fields' is rejected, like an unknown key in field_weights.
 statement error
 SELECT fts_main_documents.match_bm25('title_match', 'alpha', fields := 'missing')
