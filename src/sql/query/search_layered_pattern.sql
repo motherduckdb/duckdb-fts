@@ -144,8 +144,10 @@ results AS (
 SELECT *
 FROM results
 UNION ALL
-SELECT error(message)::VARCHAR AS docname,
+SELECT NULL::VARCHAR AS docname,
        NULL::DOUBLE AS score,
        NULL::BIGINT AS rank
 FROM search_validation_errors
+-- In a filter, not the projection: a projected error() is dropped when docname is unused.
+WHERE error(message)
 ORDER BY rank;

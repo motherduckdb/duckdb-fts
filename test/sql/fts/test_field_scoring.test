@@ -370,6 +370,33 @@ SELECT * FROM fts_main_documents.search_layered_bm25('alpha', field_b := MAP {'m
 ----
 field_b contains unknown field: missing
 
+# Validation does not depend on the shape of the caller's query.
+statement error
+SELECT count(*) FROM fts_main_documents.search_layered_bm25('alpha', b := 5.0)
+----
+b must be finite and between 0 and 1
+
+statement error
+SELECT score FROM fts_main_documents.search_layered_bm25('alpha', fields := 'missing')
+----
+fields contains unknown field: missing
+
+statement error
+SELECT count(*) FROM fts_main_documents.search_layered_bm25('al*', query_mode := 'wildcard', fields := 'missing')
+----
+fields contains unknown field: missing
+
+# The filter does not fire on a valid query.
+query I
+SELECT count(*) > 0 FROM fts_main_documents.search_layered_bm25('alpha', b := 0.75)
+----
+true
+
+statement error
+SELECT EXISTS (SELECT 1 FROM fts_main_documents.search_layered_bm25('alpha', fields := 'missing'))
+----
+fields contains unknown field: missing
+
 # An unknown name in 'fields' is rejected, like an unknown key in field_weights.
 statement error
 SELECT fts_main_documents.match_bm25('title_match', 'alpha', fields := 'missing')
