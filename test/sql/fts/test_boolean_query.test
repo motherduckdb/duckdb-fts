@@ -564,6 +564,12 @@ SELECT * FROM fts_main_boolean_docs.search_layered_bm25_query('{"query":"alpha",
 ----
 fields contains unknown field: missing
 
+# An invalid field is reported even when no column of the result is read.
+statement error
+SELECT count(*) FROM fts_main_boolean_docs.search_layered_bm25_query('{"query":"alpha","fields":["missing"]}'::JSON)
+----
+fields contains unknown field: missing
+
 statement error
 SELECT * FROM fts_main_boolean_docs.search_layered_bm25_query('{"query":"alpha","query_mode":"invalid"}'::JSON)
 ----
