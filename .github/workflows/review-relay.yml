@@ -1,44 +1,20 @@
-name: Forward review activity to pr-tracker
+name: Review relay
 
-# Runs on the default branch WITH secrets (workflow_run always does, even when the
-# run it reacts to had none). The triggering review run gave us nothing we trust,
-# so we derive the PR number from the GitHub-supplied head SHA and send only that
-# hint; pr-tracker pulls the actual reviews from the API.
+# Exists only to produce a workflow_run event. A pull_request_review on a fork PR
+# runs without secrets, so it can't dispatch to pr-tracker directly — but its
+# completion still fires a workflow_run in the base repo, which review-forward.yml
+# (running WITH secrets on the default branch) reacts to. This job emits nothing
+# that is trusted downstream; pr-tracker re-fetches the review from the API.
 
 on:
-  workflow_run:
-    workflows: ["Review relay"]
-    types: [completed]
+  pull_request_review:
+    types: [submitted, dismissed]
 
 permissions:
   contents: read
-  pull-requests: read
 
 jobs:
-  forward:
+  emit-workflow-run:
     runs-on: ubuntu-latest
     steps:
-      - name: Resolve PR number and dispatch
-        env:
-          # Look up the PR with the built-in token (it can read its own repo); the
-          # dispatch to pr-tracker uses the scoped PAT.
-          GITHUB_LOOKUP_TOKEN: ${{ github.token }}
-          DISPATCH_TOKEN: ${{ secrets.PR_DISPATCH_TOKEN }}
-          REPO: ${{ github.repository }}
-          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
-        run: |
-          set -euo pipefail
-          if ! [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "unexpected head_sha ($HEAD_SHA); skipping"; exit 0
-          fi
-          pulls=$(GH_TOKEN="$GITHUB_LOOKUP_TOKEN" gh api "/repos/$REPO/commits/$HEAD_SHA/pulls" || echo '[]')
-          number=$(printf '%s' "$pulls" | jq -r '(map(select(.state=="open")) + .) | .[0].number // empty')
-          if ! [[ "$number" =~ ^[0-9]+$ ]]; then
-            echo "no PR found for $HEAD_SHA; skipping"; exit 0
-          fi
-          echo "resolved PR #$number for $HEAD_SHA; dispatching review_activity"
-          jq -n --arg repo "$REPO" --argjson number "$number" \
-            '{event_type: "pr-event", client_payload: {
-               event: "review_activity", repo: $repo, number: $number
-             }}' \
-          | GH_TOKEN="$DISPATCH_TOKEN" gh api -X POST /repos/duckdblabs/pr-tracker/dispatches --input -
+      - run: echo "review submitted on PR ${{ github.event.pull_request.number }} - relaying via workflow_run"
