@@ -31,6 +31,7 @@ jobs:
           set -euo pipefail
           if ! [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]; then
             echo "unexpected head_sha ($HEAD_SHA); skipping"; exit 0
+          fi
           open_prs=$(GH_TOKEN="$GITHUB_LOOKUP_TOKEN" gh api --paginate \
             "/repos/$REPO/pulls?state=open&per_page=100" -q '.[]' | jq -s '.' || echo '[]')
           number=$(printf '%s' "$open_prs" | jq -r --arg sha "$HEAD_SHA" --arg br "$HEAD_BRANCH" \
