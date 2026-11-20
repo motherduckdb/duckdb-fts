@@ -8,10 +8,16 @@ require json
 
 require no_alternative_verify
 
+require no_extension_autoloading "EXPECTED: Test installs fts from the build directory into its own extension directory"
+
 load {TEST_DIR}/pattern_persistence.db
 
+# autoload json first: create_fts_index only registers the _query macros when json is loaded
 statement ok
-SET extension_directory='{TEST_DIR}/pattern_persistence_extensions'
+SELECT json_valid('{}')
+
+statement ok
+SET extension_directory='{TEST_DIR}/pp_ext'
 
 statement ok
 INSTALL '{BUILD_DIRECTORY}/extension/fts/fts.duckdb_extension'
@@ -35,7 +41,7 @@ PRAGMA create_fts_index(
 restart no_extension_load
 
 statement ok
-SET extension_directory='{TEST_DIR}/pattern_persistence_extensions'
+SET extension_directory='{TEST_DIR}/pp_ext'
 
 statement ok
 SET autoload_known_extensions=true
@@ -63,7 +69,7 @@ FROM fts_main_documents.search_layered_bm25(
 restart no_extension_load
 
 statement ok
-SET extension_directory='{TEST_DIR}/pattern_persistence_extensions'
+SET extension_directory='{TEST_DIR}/pp_ext'
 
 statement ok
 LOAD json
