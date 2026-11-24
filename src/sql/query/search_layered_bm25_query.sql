@@ -338,9 +338,13 @@ prepared_leaves AS (
     LEFT JOIN field_lists USING (node_id)
 ),
 non_pattern_leaves AS MATERIALIZED (
+    -- The leaf search validates its own arguments and raises its own error,
+    -- so it must not run on an invalid query at all: otherwise either error
+    -- can win, depending on which pipeline runs first.
     SELECT *
     FROM prepared_leaves
     WHERE query_mode NOT IN ('wildcard', 'regex')
+      AND NOT EXISTS (SELECT 1 FROM selected_validation_error)
 ),
 pattern_leaves AS MATERIALIZED (
     SELECT *

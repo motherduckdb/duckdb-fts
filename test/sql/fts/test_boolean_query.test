@@ -554,6 +554,13 @@ SELECT * FROM fts_main_boolean_docs.search_layered_bm25_query('{"query":"alpha",
 ----
 fields entries must be non-empty strings without commas or surrounding whitespace
 
+# The leaf search, which would raise its own error for the unknown field "1", doesn't run on an invalid query. With
+# the LIMIT its pipeline would otherwise run before the one that raises the validation error.
+statement error
+SELECT * FROM fts_main_boolean_docs.search_layered_bm25_query('{"query":"alpha","fields":[1]}'::JSON) LIMIT 1
+----
+fields entries must be non-empty strings without commas or surrounding whitespace
+
 statement error
 SELECT * FROM fts_main_boolean_docs.search_layered_bm25_query('{"query":"alpha","fields":[" title "]}'::JSON)
 ----
